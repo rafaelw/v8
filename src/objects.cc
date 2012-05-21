@@ -100,7 +100,7 @@ void ObjectObservation::Observe(Isolate* isolate, JSObject* object, JSObject* ob
   Handle<String> key = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
 
-  object->SetHiddenProperty(*key, observer);
+  USE(object->SetHiddenProperty(*key, observer));
 }
 
 void ObjectObservation::Unobserve(Isolate* isolate, JSObject* object, JSObject* observer) {
