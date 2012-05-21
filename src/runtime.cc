@@ -49,6 +49,7 @@
 #include "liveedit.h"
 #include "liveobjectlist-inl.h"
 #include "misc-intrinsics.h"
+#include "objects.h"
 #include "parser.h"
 #include "platform.h"
 #include "runtime-profiler.h"
@@ -9963,6 +9964,65 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GlobalPrint) {
     PrintF("%c", character);
   }
   return string;
+}
+
+// Object Observation
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectObserve) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 2);
+  CONVERT_ARG_CHECKED(JSObject, obj, 0);
+  CONVERT_ARG_CHECKED(JSObject, observer, 1);
+  RUNTIME_ASSERT(observer->IsJSFunction());
+
+  // TODO SetInternalField() for optimziation?
+
+  ObjectObservation::Observe(isolate, obj, observer);
+  return isolate->heap()->undefined_value();
+}
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectUnobserve) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 2);
+  CONVERT_ARG_CHECKED(JSObject, obj, 0);
+  CONVERT_ARG_CHECKED(JSObject, observer, 1);
+  RUNTIME_ASSERT(observer->IsJSFunction());
+
+  if (!ObjectObservation::IsObserved(isolate, obj))
+    return isolate->heap()->undefined_value();
+
+  ObjectObservation::Unobserve(isolate, obj, observer);
+  return isolate->heap()->undefined_value();
+}
+
+enum ObjectMutationType {
+  VALUE_MUTATION,
+  DESCRIPTOR_CHANGE
+};
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectNotifyObservers) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 4);
+  Heap* heap = isolate->heap();
+  Factory* factory = isolate->factory();
+
+  CONVERT_ARG_CHECKED(JSObject, recordArg, 0);
+  CONVERT_ARG_CHECKED(JSObject, obj, 1);
+  CONVERT_NUMBER_CHECKED(int32_t, mutationType, Int32, args[2]);
+  CONVERT_ARG_CHECKED(String, name, 3);
+
+  if (!ObjectObservation::IsObserved(isolate, obj))
+    return heap->undefined_value();
+
+  // FIXME: No idea why this doesn't work declaring as a CONVERT_ARG_CHECKED above.
+  Handle<String> old_value_sym = factory->NewStringFromAscii(CStrVector("oldValue"));
+  MaybeObject* maybeOldValue = recordArg->GetProperty(*old_value_sym);
+  Object* oldValue;
+  if (!maybeOldValue->ToObject(&oldValue))
+    return heap->undefined_value();
+
+  ObjectObservation::EnqueueObservationChange(isolate, obj, name, mutationType, oldValue);
+
+  return heap->undefined_value();
 }
 
 // Moves all own elements of an object, that are below a limit, to positions

@@ -56,6 +56,190 @@
 namespace v8 {
 namespace internal {
 
+// Object observation
+const char *kHiddenChangeObserversStr = "___changeObservers";
+enum ObjectMutationType {
+  VALUE_MUTATION,
+  DESCRIPTOR_CHANGE
+};
+struct ObservationChangeRecord {
+  Object** object;
+  Object** observerFn; // for sorting purposes
+  String* name;
+  int type;
+  Object** old_value;
+};
+typedef List<ObservationChangeRecord> ObservationsList;
+static ObservationsList* enqueued_observation_changes_ = NULL;
+
+
+static int compare_callback_functions(const ObservationChangeRecord* x, 
+      const ObservationChangeRecord* y);
+
+// Sort the property changes based on callback functions (observers)
+int compare_callback_functions(const ObservationChangeRecord* x, 
+      const ObservationChangeRecord* y) {
+  return *x->observerFn > *y->observerFn;
+}
+
+bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
+  HandleScope scope(isolate);
+  JSObject* jsObject = JSObject::cast(object);
+
+  if (!jsObject->HasHiddenProperties())
+    return false;
+
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
+  Handle<Object> observerFn = Handle<Object>(jsObject->GetHiddenProperty(*key));
+
+  return observerFn->IsJSFunction();
+}
+
+void ObjectObservation::Observe(Isolate* isolate, JSObject* object, JSObject* observer) {
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
+
+  object->SetHiddenProperty(*key, observer);
+}
+
+void ObjectObservation::Unobserve(Isolate* isolate, JSObject* object, JSObject* observer) {
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
+  object->DeleteHiddenProperty(*key);
+}
+
+void ObjectObservation::EnqueueObservationChange(Isolate* isolate, JSObject* obj, String* name, int type, Object* old_value) {
+  HandleScope scope(isolate);
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
+  Handle<Object> observerFn = Handle<Object>(obj->GetHiddenProperty(*key));
+
+  if (!enqueued_observation_changes_)
+    enqueued_observation_changes_ = new List<ObservationChangeRecord>;
+
+  ObservationChangeRecord record;
+  Handle<Object> handle = isolate->global_handles()->Create(obj);
+  Handle<Object> observerHandle = isolate->global_handles()->Create(*observerFn);
+  Handle<Object> oldValueHandle;
+  if (old_value)
+    oldValueHandle = isolate->global_handles()->Create(old_value);
+
+  record.object = handle.location();
+  record.observerFn = observerHandle.location();
+  record.name = name;
+  record.type = type;
+  record.old_value = old_value ? oldValueHandle.location() : NULL;
+
+  enqueued_observation_changes_->Add(record);
+}
+
+// FIXME: We shouldn't be returning a Handle here (handleScope thing).
+static Handle<JSArray> createChangeRecordArray(List<ObservationChangeRecord> *changes, int startIndex, int endIndex) {
+  Isolate* isolate = Isolate::Current();
+  Factory* factory = isolate->factory();
+  //HandleScope scope(isolate);
+
+  Handle<String> key = factory->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
+  Handle<String> name_sym = factory->LookupAsciiSymbol(
+      Vector<const char>("name", sizeof("name") - 1));
+  Handle<String> type_sym = factory->NewStringFromAscii(CStrVector("type"));
+  Handle<String> value_sym = factory->NewStringFromAscii(CStrVector("value"));
+  Handle<String> descriptor_sym = factory->NewStringFromAscii(CStrVector("descriptor"));
+  Handle<String> object_sym = factory->NewStringFromAscii(CStrVector("object"));
+  Handle<String> old_value_sym = factory->NewStringFromAscii(CStrVector("oldValue"));
+
+  // build the array of changes records
+  int count = endIndex - startIndex;
+  Handle<FixedArray> records_sent = factory->NewFixedArray(count);
+  MaybeObject* ignore;
+  for (int i = 0; i < count; i++) {
+    ObservationChangeRecord& theChangeRecord = changes->at(startIndex+i);
+    Handle<JSObject> recordObject =
+        factory->NewJSObject(isolate->object_function(), TENURED);
+
+    ignore = recordObject->SetProperty(
+        *name_sym,
+        theChangeRecord.name,
+        NONE, kNonStrictMode);
+    ignore = recordObject->SetProperty(
+        *type_sym,
+        Object::cast((theChangeRecord.type == VALUE_MUTATION) ? *value_sym : *descriptor_sym),
+        NONE, kNonStrictMode);
+    ignore = recordObject->SetProperty(
+        *object_sym,
+        Object::cast(*theChangeRecord.object),
+        NONE, kNonStrictMode);
+    ignore = recordObject->SetProperty(
+        *old_value_sym,
+        theChangeRecord.old_value != NULL ? Object::cast(*theChangeRecord.old_value) : isolate->heap()->undefined_value(),
+        NONE, kNonStrictMode);
+
+    USE(ignore);
+    records_sent->set(i, *recordObject);
+  }
+
+  return factory->NewJSArrayWithElements(records_sent);
+}
+
+void FireObjectObservations() {
+  if (!enqueued_observation_changes_)
+    return;
+
+  Isolate* isolate = Isolate::Current();
+  Factory* factory = isolate->factory();
+  HandleScope scope(isolate);
+
+  // protect against items that may be scheduled during the callbacks
+  List<ObservationChangeRecord> *changes = enqueued_observation_changes_;
+  enqueued_observation_changes_ = NULL;
+
+  // Sort the list based on the callbackFn objects, then we'll
+  // deliver #n unique callbacks.
+  changes->Sort(compare_callback_functions);
+
+  // the array is now chunked, and we want to dispatch 
+  int startIndex = 0;
+  int endIndex = 0;
+
+  while (endIndex < changes->length()) {
+    Object* curObservationObject = *(changes->at(startIndex).observerFn);
+
+    while (endIndex < changes->length() && 
+            *(changes->at(endIndex).observerFn) == curObservationObject) {
+      endIndex++;
+    }
+
+    if (endIndex != startIndex) {
+      Handle<JSArray> recordArray = createChangeRecordArray(changes, startIndex, endIndex);
+      JSObject* this_handle = JSObject::cast(*(changes->at(startIndex).object));
+
+      // call back the observer fn
+      //JSObject* this_handle = JSObject::cast(*(record.object));
+      Handle<Object> callbackFn(*(changes->at(startIndex).observerFn));
+
+      bool has_pending_exception = false;
+      Handle<Object> args[] = { recordArray };
+      Execution::Call(callbackFn, Handle<Object>(this_handle), 1, args, &has_pending_exception);
+    }
+
+    startIndex = endIndex;
+    endIndex++;
+  }
+  
+  // remove the handles
+  for (int i = 0; i < changes->length(); ++i) {
+    ObservationChangeRecord& record = changes->at(i);
+    isolate->global_handles()->Destroy(record.object);
+    isolate->global_handles()->Destroy(record.observerFn);
+    if (record.old_value)
+      isolate->global_handles()->Destroy(record.old_value);
+  }
+
+  delete changes;
+}
+
 void PrintElementsKind(FILE* out, ElementsKind kind) {
   ElementsAccessor* accessor = ElementsAccessor::ForKind(kind);
   PrintF(out, "%s", accessor->name());
@@ -1946,13 +2130,25 @@ Handle<Object> JSReceiver::SetProperty(Handle<JSReceiver> object,
                      Object);
 }
 
-
 MaybeObject* JSReceiver::SetProperty(String* name,
                                      Object* value,
                                      PropertyAttributes attributes,
                                      StrictModeFlag strict_mode) {
-  LookupResult result(GetIsolate());
+  Isolate* isolate = GetIsolate();
+  LookupResult result(isolate);
   LocalLookup(name, &result);
+
+  if (ObjectObservation::IsObserved(isolate, this)) {
+    Object* oldValue = NULL;
+    if (result.IsFound() && (result.type() == NORMAL ||
+                             result.type() == FIELD ||
+                             result.type() == CONSTANT_FUNCTION)) {
+       oldValue = result.GetLazyValue();
+    }
+
+    ObjectObservation::EnqueueObservationChange(isolate, JSObject::cast(this), name, VALUE_MUTATION, oldValue);
+  }
+
   return SetProperty(&result, name, value, attributes, strict_mode);
 }
 

@@ -178,6 +178,7 @@ enum KeyedAccessGrowMode {
 const int kElementsKindCount = LAST_ELEMENTS_KIND - FIRST_ELEMENTS_KIND + 1;
 
 void PrintElementsKind(FILE* out, ElementsKind kind);
+void FireObjectObservations();
 
 inline bool IsMoreGeneralElementsKindTransition(ElementsKind from_kind,
                                                 ElementsKind to_kind);
@@ -8553,6 +8554,13 @@ class VisitorSynchronization : public AllStatic {
   static const char* const kTagNames[kNumberOfSyncTags];
 };
 
+class ObjectObservation {
+ public:
+  static bool IsObserved(Isolate* isolate, JSReceiver* object);
+  static void Observe(Isolate* isolate, JSObject* object, JSObject* observer);
+  static void Unobserve(Isolate* isolate, JSObject* object, JSObject* observer);
+  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj, String* name, int type, Object* old_value);
+};
 // Abstract base class for visiting, and optionally modifying, the
 // pointers contained in Objects. Used in GC and serialization/deserialization.
 class ObjectVisitor BASE_EMBEDDED {

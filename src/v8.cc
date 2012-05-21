@@ -213,6 +213,7 @@ void V8::RemoveCallCompletedCallback(CallCompletedCallback callback) {
 
 
 void V8::FireCallCompletedCallback(Isolate* isolate) {
+  v8::internal::FireObjectObservations();
   if (call_completed_callbacks_ == NULL) return;
   HandleScopeImplementer* handle_scope_implementer =
       isolate->handle_scope_implementer();

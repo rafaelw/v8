@@ -277,6 +277,85 @@ function ObjectPropertyIsEnumerable(V) {
 }
 
 
+// Object Observation
+function ObjectObserve(object, callback) {
+  if (!IS_SPEC_OBJECT(object)) {
+    throw MakeTypeError("called_on_non_object",
+                        ["Object.observeObject"]);
+  }
+
+  if (!IS_SPEC_FUNCTION(callback)) {
+    throw new $TypeError(
+        'Object.observeObject: Expecting function');
+  }
+
+  // When anything on this object changes, call the callback.
+  return %ObjectObserve(object, callback);
+}
+
+function ObjectUnobserve(object, callback) {
+  if (!IS_SPEC_OBJECT(object)) {
+    throw MakeTypeError("called_on_non_object",
+                        ["Object.observeObject"]);
+  }
+
+  if (!IS_SPEC_FUNCTION(callback)) {
+    throw new $TypeError(
+        'Object.observeObject: Expecting function');
+  }
+
+  return %ObjectUnobserve(object, callback);
+}
+
+function toChangeRecord(inRecord) {
+  if (!IS_SPEC_OBJECT(inRecord)) {
+    throw new $TypeError('Invalid ChangeRecord');
+  }
+
+  if (!IS_SPEC_OBJECT(inRecord.object)) {
+    throw new $TypeError('Invalid ChangeRecord');
+  }
+
+  if (typeof inRecord.type != "string" ||
+      (inRecord.type != "value" &&
+       inRecord.type != "descriptor")) {
+    throw new $TypeError('Invalid ChangeRecord');
+  }
+
+  if (typeof inRecord.name != "string") {
+    throw new $TypeError('Invalid ChangeRecord');
+  }
+
+  if (typeof inRecord.type != "string") {
+    throw new $TypeError('Invalid ChangeRecord');
+  }
+
+  if (!%HasLocalProperty(inRecord, "oldValue")) {
+    throw new $TypeError('Invalid ChangeRecord');
+  }
+
+  // TODO(rafaelw): Further validation of change record.
+
+  return {
+    object: inRecord.object,
+    type: inRecord.type,
+    name: inRecord.name,
+    oldValue: inRecord.oldValue
+  }
+}
+
+function ObjectNotifyObservers(uncheckedChangeRecord) {
+  changeRecord = toChangeRecord(uncheckedChangeRecord);
+  if (!changeRecord)
+    return false;
+  
+  %ObjectNotifyObservers(changeRecord,
+                         changeRecord.object,
+                         changeRecord.type === 'value' ? 0 : 1,
+                         changeRecord.name);
+  return true;
+}
+
 // Extensions for providing property getters and setters.
 function ObjectDefineGetter(name, fun) {
   var receiver = this;
@@ -293,7 +372,6 @@ function ObjectDefineGetter(name, fun) {
   desc.setConfigurable(true);
   DefineOwnProperty(ToObject(receiver), ToString(name), desc, false);
 }
-
 
 function ObjectLookupGetter(name) {
   var receiver = this;
@@ -1293,6 +1371,9 @@ function SetUpObject() {
     "hasOwnProperty", ObjectHasOwnProperty,
     "isPrototypeOf", ObjectIsPrototypeOf,
     "propertyIsEnumerable", ObjectPropertyIsEnumerable,
+    "observe", ObjectObserve,
+    "unobserve", ObjectUnobserve,
+    "notifyObservers", ObjectNotifyObservers,
     "__defineGetter__", ObjectDefineGetter,
     "__lookupGetter__", ObjectLookupGetter,
     "__defineSetter__", ObjectDefineSetter,

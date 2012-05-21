@@ -267,6 +267,11 @@ namespace internal {
   F(DefineOrRedefineAccessorProperty, 5, 1) \
   F(IgnoreAttributesAndSetProperty, -1 /* 3 or 4 */, 1) \
   \
+  /* Object Observation */ \
+  F(ObjectObserve, 2, 1) \
+  F(ObjectUnobserve, 2, 1) \
+  F(ObjectNotifyObservers, 4, 1) \
+  \
   /* Arrays */ \
   F(RemoveArrayHoles, 2, 1) \
   F(GetArrayKeys, 2, 1) \
