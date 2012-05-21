@@ -365,7 +365,7 @@ DEFINE_bool(use_idle_notification, true,
 DEFINE_bool(send_idle_notification, false,
             "Send idle notifcation between stress runs.")
 // ic.cc
-DEFINE_bool(use_ic, true, "use inline caching")
+DEFINE_bool(use_ic, false, "use inline caching")
 
 #ifdef LIVE_OBJECT_LIST
 // liveobjectlist.cc
