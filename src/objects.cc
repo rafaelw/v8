@@ -65,7 +65,7 @@ enum ObjectMutationType {
 struct ObservationChangeRecord {
   Object** object;
   Object** observerFn; // for sorting purposes
-  String* name;
+  Object** name;
   int type;
   Object** old_value;
 };
@@ -127,7 +127,7 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate, JSObject* obj
 
   record.object = handle.location();
   record.observerFn = observerHandle.location();
-  record.name = name;
+  record.name = isolate->global_handles()->Create(name).location();
   record.type = type;
   record.old_value = old_value ? oldValueHandle.location() : NULL;
 
@@ -161,7 +161,7 @@ static Handle<JSArray> createChangeRecordArray(List<ObservationChangeRecord> *ch
 
     ignore = recordObject->SetProperty(
         *name_sym,
-        theChangeRecord.name,
+        *theChangeRecord.name,
         NONE, kNonStrictMode);
     ignore = recordObject->SetProperty(
         *type_sym,
@@ -169,7 +169,7 @@ static Handle<JSArray> createChangeRecordArray(List<ObservationChangeRecord> *ch
         NONE, kNonStrictMode);
     ignore = recordObject->SetProperty(
         *object_sym,
-        Object::cast(*theChangeRecord.object),
+        *theChangeRecord.object,
         NONE, kNonStrictMode);
     ignore = recordObject->SetProperty(
         *old_value_sym,
@@ -233,6 +233,7 @@ void FireObjectObservations() {
     ObservationChangeRecord& record = changes->at(i);
     isolate->global_handles()->Destroy(record.object);
     isolate->global_handles()->Destroy(record.observerFn);
+    isolate->global_handles()->Destroy(record.name);
     if (record.old_value)
       isolate->global_handles()->Destroy(record.old_value);
   }
