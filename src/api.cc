@@ -4274,6 +4274,11 @@ int v8::V8::ContextDisposedNotification() {
 }
 
 
+void v8::V8::FireObjectObserverCallbacks() {
+  i::FireObjectObservations();
+}
+
+
 const char* v8::V8::GetVersion() {
   return i::Version::GetVersion();
 }

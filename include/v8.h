@@ -3304,6 +3304,8 @@ class V8EXPORT V8 {
    */
   static int ContextDisposedNotification();
 
+  static void FireObjectObserverCallbacks();
+
  private:
   V8();
 
