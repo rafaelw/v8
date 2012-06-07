@@ -9699,6 +9699,20 @@ MaybeObject* JSObject::SetElement(uint32_t index,
     dictionary->set_requires_slow_elements();
   }
 
+
+  Isolate* isolate = GetIsolate();
+  if (ObjectObservation::IsObserved(isolate, this)) {
+    String* name;
+    MaybeObject* maybe_name = GetHeap()->Uint32ToString(index);
+    if (maybe_name->To<String>(&name)) {
+      // TODO(adamk): Do something safer instead of GetElement().
+      MaybeObject* maybe_object = GetElement(index);
+      Object* oldValue = NULL;
+      maybe_object->ToObject(&oldValue);
+      ObjectObservation::EnqueueObservationChange(isolate, this, name, VALUE_MUTATION, oldValue);
+    }
+  }
+
   // Check for lookup interceptor
   if (HasIndexedInterceptor()) {
     return SetElementWithInterceptor(index,
