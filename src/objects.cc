@@ -241,6 +241,15 @@ void FireObjectObservations() {
   delete changes;
 }
 
+static inline void EnqueueLengthChange(JSArray* obj) {
+  Heap* heap = obj->GetHeap();
+  Isolate* isolate = heap->isolate();
+  if (ObjectObservation::IsObserved(isolate, obj)) {
+    ObjectObservation::EnqueueObservationChange(isolate, obj, heap->length_symbol(), VALUE_MUTATION, obj->length());
+  }
+}
+
+
 void PrintElementsKind(FILE* out, ElementsKind kind) {
   ElementsAccessor* accessor = ElementsAccessor::ForKind(kind);
   PrintF(out, "%s", accessor->name());
@@ -8656,6 +8665,7 @@ MaybeObject* JSObject::SetFastElementsCapacityAndLength(
 
   // Update the length if necessary.
   if (IsJSArray()) {
+    EnqueueLengthChange(JSArray::cast(this));
     JSArray::cast(this)->set_length(Smi::FromInt(length));
   }
 
@@ -8702,6 +8712,7 @@ MaybeObject* JSObject::SetFastDoubleElementsCapacityAndLength(
   }
 
   if (IsJSArray()) {
+    EnqueueLengthChange(JSArray::cast(this));
     JSArray::cast(this)->set_length(Smi::FromInt(length));
   }
 
@@ -9366,6 +9377,7 @@ MaybeObject* JSObject::SetFastElement(uint32_t index,
   ASSERT(elements()->IsFixedArray());
   backing_store->set(index, value);
   if (must_update_array_length) {
+    EnqueueLengthChange(JSArray::cast(this));
     JSArray::cast(this)->set_length(Smi::FromInt(array_length));
   }
   return value;
@@ -9567,6 +9579,7 @@ MUST_USE_RESULT MaybeObject* JSObject::SetFastDoubleElement(
       uint32_t array_length = 0;
       CHECK(JSArray::cast(this)->length()->ToArrayIndex(&array_length));
       if (index >= array_length) {
+        EnqueueLengthChange(JSArray::cast(this));
         JSArray::cast(this)->set_length(Smi::FromInt(index + 1));
       }
     }
@@ -9912,6 +9925,7 @@ MaybeObject* JSArray::JSArrayUpdateLengthFromIndex(uint32_t index,
           GetHeap()->NumberFromDouble(static_cast<double>(index) + 1);
       if (!maybe_len->ToObject(&len)) return maybe_len;
     }
+    EnqueueLengthChange(JSArray::cast(this));
     set_length(len);
   }
   return value;
