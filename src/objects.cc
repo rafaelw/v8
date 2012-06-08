@@ -4182,7 +4182,6 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
     }
 
     if (ObjectObservation::IsObserved(isolate, this)) {
-      LookupResult result(isolate);
       Object* oldValue = NULL;
       if (result.IsFound() && (result.type() == NORMAL ||
                                result.type() == FIELD ||
