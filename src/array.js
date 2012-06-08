@@ -441,8 +441,8 @@ function ArrayPop() {
   }
   n--;
   var value = this[n];
-  this.length = n;
   delete this[n];
+  this.length = n;
   return value;
 }
 
