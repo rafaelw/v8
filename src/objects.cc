@@ -4096,6 +4096,19 @@ Handle<Object> JSObject::DeleteElement(Handle<JSObject> obj,
 
 MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
   Isolate* isolate = GetIsolate();
+
+  if (ObjectObservation::IsObserved(isolate, this)) {
+    String* name;
+    MaybeObject* maybe_name = GetHeap()->Uint32ToString(index);
+    if (maybe_name->To<String>(&name)) {
+      // TODO(adamk): Do something safer instead of GetElement().
+      MaybeObject* maybe_object = GetElement(index);
+      Object* oldValue = NULL;
+      maybe_object->ToObject(&oldValue);
+      ObjectObservation::EnqueueObservationChange(isolate, this, name, VALUE_MUTATION, oldValue);
+    }
+  }
+
   // Check access rights if needed.
   if (IsAccessCheckNeeded() &&
       !isolate->MayIndexedAccess(this, index, v8::ACCESS_DELETE)) {
@@ -4167,6 +4180,18 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
       }
       return isolate->heap()->false_value();
     }
+
+    if (ObjectObservation::IsObserved(isolate, this)) {
+      LookupResult result(isolate);
+      Object* oldValue = NULL;
+      if (result.IsFound() && (result.type() == NORMAL ||
+                               result.type() == FIELD ||
+                               result.type() == CONSTANT_FUNCTION)) {
+        oldValue = result.GetLazyValue();
+      }
+      ObjectObservation::EnqueueObservationChange(isolate, this, name, VALUE_MUTATION, oldValue);
+    }
+
     // Check for interceptor.
     if (result.type() == INTERCEPTOR) {
       // Skip interceptor if forcing a deletion.
