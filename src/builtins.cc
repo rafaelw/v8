@@ -455,6 +455,10 @@ static inline bool IsJSArrayFastElementMovingAllowed(Heap* heap,
          ArrayPrototypeHasNoElements(heap, global_context, array_proto);
 }
 
+static inline bool IsJSArrayObserved(Isolate* isolate, Object* receiver) {
+  return receiver->IsJSReceiver() && ObjectObservation::IsObserved(isolate, JSReceiver::cast(receiver));
+}
+
 
 MUST_USE_RESULT static MaybeObject* CallJsBuiltin(
     Isolate* isolate,
@@ -485,6 +489,8 @@ MUST_USE_RESULT static MaybeObject* CallJsBuiltin(
 BUILTIN(ArrayPush) {
   Heap* heap = isolate->heap();
   Object* receiver = *args.receiver();
+  if (IsJSArrayObserved(isolate, receiver))
+    return CallJsBuiltin(isolate, "ArrayPush", args);
   Object* elms_obj;
   { MaybeObject* maybe_elms_obj =
         EnsureJSArrayWithWritableFastElements(heap, receiver, &args, 1);
@@ -543,6 +549,8 @@ BUILTIN(ArrayPush) {
 BUILTIN(ArrayPop) {
   Heap* heap = isolate->heap();
   Object* receiver = *args.receiver();
+  if (IsJSArrayObserved(isolate, receiver))
+    return CallJsBuiltin(isolate, "ArrayPop", args);
   Object* elms_obj;
   { MaybeObject* maybe_elms_obj =
         EnsureJSArrayWithWritableFastElements(heap, receiver, NULL, 0);
@@ -576,6 +584,8 @@ BUILTIN(ArrayPop) {
 BUILTIN(ArrayShift) {
   Heap* heap = isolate->heap();
   Object* receiver = *args.receiver();
+  if (IsJSArrayObserved(isolate, receiver))
+    return CallJsBuiltin(isolate, "ArrayShift", args);
   Object* elms_obj;
   { MaybeObject* maybe_elms_obj =
         EnsureJSArrayWithWritableFastElements(heap, receiver, NULL, 0);
@@ -618,6 +628,8 @@ BUILTIN(ArrayShift) {
 BUILTIN(ArrayUnshift) {
   Heap* heap = isolate->heap();
   Object* receiver = *args.receiver();
+  if (IsJSArrayObserved(isolate, receiver))
+    return CallJsBuiltin(isolate, "ArrayUnshift", args);
   Object* elms_obj;
   { MaybeObject* maybe_elms_obj =
         EnsureJSArrayWithWritableFastElements(heap, receiver, NULL, 0);
@@ -774,6 +786,8 @@ BUILTIN(ArraySlice) {
 BUILTIN(ArraySplice) {
   Heap* heap = isolate->heap();
   Object* receiver = *args.receiver();
+  if (IsJSArrayObserved(isolate, receiver))
+    return CallJsBuiltin(isolate, "ArraySplice", args);
   Object* elms_obj;
   { MaybeObject* maybe_elms_obj =
         EnsureJSArrayWithWritableFastElements(heap, receiver, &args, 3);
