@@ -256,7 +256,7 @@ void Isolate::PreallocatedStorageInit(size_t size) {
 
 void* Isolate::PreallocatedStorageNew(size_t size) {
   if (!preallocated_storage_preallocated_) {
-    return FreeStoreAllocationPolicy::New(size);
+    return FreeStoreAllocationPolicy().New(size);
   }
   ASSERT(free_list_.next_ != &free_list_);
   ASSERT(free_list_.previous_ != &free_list_);
@@ -921,7 +921,7 @@ Failure* Isolate::Throw(Object* exception, MessageLocation* location) {
 }
 
 
-Failure* Isolate::ReThrow(MaybeObject* exception, MessageLocation* location) {
+Failure* Isolate::ReThrow(MaybeObject* exception) {
   bool can_be_caught_externally = false;
   bool catchable_by_javascript = is_catchable_by_javascript(exception);
   ShouldReportException(&can_be_caught_externally, catchable_by_javascript);
@@ -945,9 +945,12 @@ void Isolate::ScheduleThrow(Object* exception) {
   // When scheduling a throw we first throw the exception to get the
   // error reporting if it is uncaught before rescheduling it.
   Throw(exception);
-  thread_local_top()->scheduled_exception_ = pending_exception();
-  thread_local_top()->external_caught_exception_ = false;
-  clear_pending_exception();
+  PropagatePendingExceptionToExternalTryCatch();
+  if (has_pending_exception()) {
+    thread_local_top()->scheduled_exception_ = pending_exception();
+    thread_local_top()->external_caught_exception_ = false;
+    clear_pending_exception();
+  }
 }
 
 
@@ -1131,8 +1134,18 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
       // to the console for easier debugging.
       int line_number = GetScriptLineNumberSafe(location->script(),
                                                 location->start_pos());
-      OS::PrintError("Extension or internal compilation error at line %d.\n",
-                     line_number);
+      if (exception->IsString()) {
+        OS::PrintError(
+            "Extension or internal compilation error: %s in %s at line %d.\n",
+            *String::cast(exception)->ToCString(),
+            *String::cast(location->script()->name())->ToCString(),
+            line_number);
+      } else {
+        OS::PrintError(
+            "Extension or internal compilation error in %s at line %d.\n",
+            *String::cast(location->script()->name())->ToCString(),
+            line_number);
+      }
     }
   }
 
@@ -1537,6 +1550,11 @@ void Isolate::TearDown() {
     thread_data_table_->RemoveAllThreads(this);
   }
 
+  if (serialize_partial_snapshot_cache_ != NULL) {
+    delete[] serialize_partial_snapshot_cache_;
+    serialize_partial_snapshot_cache_ = NULL;
+  }
+
   if (!IsDefaultIsolate()) {
     delete this;
   }
@@ -1582,6 +1600,26 @@ void Isolate::Deinit() {
     // The default isolate is re-initializable due to legacy API.
     state_ = UNINITIALIZED;
   }
+}
+
+
+void Isolate::PushToPartialSnapshotCache(Object* obj) {
+  int length = serialize_partial_snapshot_cache_length();
+  int capacity = serialize_partial_snapshot_cache_capacity();
+
+  if (length >= capacity) {
+    int new_capacity = static_cast<int>((capacity + 10) * 1.2);
+    Object** new_array = new Object*[new_capacity];
+    for (int i = 0; i < length; i++) {
+      new_array[i] = serialize_partial_snapshot_cache()[i];
+    }
+    if (capacity != 0) delete[] serialize_partial_snapshot_cache();
+    set_serialize_partial_snapshot_cache(new_array);
+    set_serialize_partial_snapshot_cache_capacity(new_capacity);
+  }
+
+  serialize_partial_snapshot_cache()[length] = obj;
+  set_serialize_partial_snapshot_cache_length(length + 1);
 }
 
 
@@ -1768,7 +1806,7 @@ bool Isolate::Init(Deserializer* des) {
   global_handles_ = new GlobalHandles(this);
   bootstrapper_ = new Bootstrapper();
   handle_scope_implementer_ = new HandleScopeImplementer(this);
-  stub_cache_ = new StubCache(this);
+  stub_cache_ = new StubCache(this, zone());
   regexp_stack_ = new RegExpStack();
   regexp_stack_->isolate_ = this;
   date_cache_ = new DateCache();
@@ -1802,6 +1840,11 @@ bool Isolate::Init(Deserializer* des) {
     return false;
   }
 
+  if (create_heap_objects) {
+    // Terminate the cache array with the sentinel so we can iterate.
+    PushToPartialSnapshotCache(heap_.undefined_value());
+  }
+
   InitializeThreadLocal();
 
   bootstrapper_->Initialize(create_heap_objects);
@@ -1828,7 +1871,7 @@ bool Isolate::Init(Deserializer* des) {
 #endif
 
   // If we are deserializing, read the state into the now-empty heap.
-  if (des != NULL) {
+  if (!create_heap_objects) {
     des->Deserialize();
   }
   stub_cache_->Initialize();
@@ -1843,7 +1886,7 @@ bool Isolate::Init(Deserializer* des) {
   heap_.SetStackLimits();
 
   // Quiet the heap NaN if needed on target platform.
-  if (des != NULL) Assembler::QuietNaN(heap_.nan_value());
+  if (create_heap_objects) Assembler::QuietNaN(heap_.nan_value());
 
   deoptimizer_data_ = new DeoptimizerData;
   runtime_profiler_ = new RuntimeProfiler(this);
@@ -1851,7 +1894,7 @@ bool Isolate::Init(Deserializer* des) {
 
   // If we are deserializing, log non-function code objects and compiled
   // functions found in the snapshot.
-  if (des != NULL && (FLAG_log_code || FLAG_ll_prof)) {
+  if (create_heap_objects && (FLAG_log_code || FLAG_ll_prof)) {
     HandleScope scope;
     LOG(this, LogCodeObjects());
     LOG(this, LogCompiledFunctions());

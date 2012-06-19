@@ -87,6 +87,8 @@ void ToNumberStub::Generate(MacroAssembler* masm) {
 void FastNewClosureStub::Generate(MacroAssembler* masm) {
   // Create a new closure from the given function info in new
   // space. Set the context to the current context in cp.
+  Counters* counters = masm->isolate()->counters();
+
   Label gc;
 
   // Pop the function info from the stack.
@@ -100,6 +102,8 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
                         &gc,
                         TAG_OBJECT);
 
+  __ IncrementCounter(counters->fast_new_closure_total(), 1, t2, t3);
+
   int map_index = (language_mode_ == CLASSIC_MODE)
       ? Context::FUNCTION_MAP_INDEX
       : Context::STRICT_MODE_FUNCTION_MAP_INDEX;
@@ -108,29 +112,105 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
   // as the map of the allocated object.
   __ lw(a2, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
   __ lw(a2, FieldMemOperand(a2, GlobalObject::kGlobalContextOffset));
-  __ lw(a2, MemOperand(a2, Context::SlotOffset(map_index)));
-  __ sw(a2, FieldMemOperand(v0, HeapObject::kMapOffset));
+  __ lw(t1, MemOperand(a2, Context::SlotOffset(map_index)));
+  __ sw(t1, FieldMemOperand(v0, HeapObject::kMapOffset));
 
   // Initialize the rest of the function. We don't have to update the
   // write barrier because the allocated object is in new space.
   __ LoadRoot(a1, Heap::kEmptyFixedArrayRootIndex);
-  __ LoadRoot(a2, Heap::kTheHoleValueRootIndex);
-  __ LoadRoot(t0, Heap::kUndefinedValueRootIndex);
+  __ LoadRoot(t1, Heap::kTheHoleValueRootIndex);
   __ sw(a1, FieldMemOperand(v0, JSObject::kPropertiesOffset));
   __ sw(a1, FieldMemOperand(v0, JSObject::kElementsOffset));
-  __ sw(a2, FieldMemOperand(v0, JSFunction::kPrototypeOrInitialMapOffset));
+  __ sw(t1, FieldMemOperand(v0, JSFunction::kPrototypeOrInitialMapOffset));
   __ sw(a3, FieldMemOperand(v0, JSFunction::kSharedFunctionInfoOffset));
   __ sw(cp, FieldMemOperand(v0, JSFunction::kContextOffset));
   __ sw(a1, FieldMemOperand(v0, JSFunction::kLiteralsOffset));
-  __ sw(t0, FieldMemOperand(v0, JSFunction::kNextFunctionLinkOffset));
 
   // Initialize the code pointer in the function to be the one
   // found in the shared function info object.
+  // But first check if there is an optimized version for our context.
+  Label check_optimized;
+  Label install_unoptimized;
+  if (FLAG_cache_optimized_code) {
+    __ lw(a1,
+          FieldMemOperand(a3, SharedFunctionInfo::kOptimizedCodeMapOffset));
+    __ And(at, a1, a1);
+    __ Branch(&check_optimized, ne, at, Operand(zero_reg));
+  }
+  __ bind(&install_unoptimized);
+  __ LoadRoot(t0, Heap::kUndefinedValueRootIndex);
+  __ sw(t0, FieldMemOperand(v0, JSFunction::kNextFunctionLinkOffset));
   __ lw(a3, FieldMemOperand(a3, SharedFunctionInfo::kCodeOffset));
   __ Addu(a3, a3, Operand(Code::kHeaderSize - kHeapObjectTag));
 
   // Return result. The argument function info has been popped already.
   __ sw(a3, FieldMemOperand(v0, JSFunction::kCodeEntryOffset));
+  __ Ret();
+
+  __ bind(&check_optimized);
+
+  __ IncrementCounter(counters->fast_new_closure_try_optimized(), 1, t2, t3);
+
+  // a2 holds global context, a1 points to fixed array of 3-element entries
+  // (global context, optimized code, literals).
+  // The optimized code map must never be empty, so check the first elements.
+  Label install_optimized;
+  // Speculatively move code object into t0.
+  __ lw(t0, FieldMemOperand(a1, FixedArray::kHeaderSize + kPointerSize));
+  __ lw(t1, FieldMemOperand(a1, FixedArray::kHeaderSize));
+  __ Branch(&install_optimized, eq, a2, Operand(t1));
+
+  // Iterate through the rest of map backwards.  t0 holds an index as a Smi.
+  Label loop;
+  __ lw(t0, FieldMemOperand(a1, FixedArray::kLengthOffset));
+  __ bind(&loop);
+  // Do not double check first entry.
+
+  __ Branch(&install_unoptimized, eq, t0,
+            Operand(Smi::FromInt(SharedFunctionInfo::kEntryLength)));
+  __ Subu(t0, t0, Operand(
+      Smi::FromInt(SharedFunctionInfo::kEntryLength)));  // Skip an entry.
+  __ Addu(t1, a1, Operand(FixedArray::kHeaderSize - kHeapObjectTag));
+  __ sll(at, t0, kPointerSizeLog2 - kSmiTagSize);
+  __ Addu(t1, t1, Operand(at));
+  __ lw(t1, MemOperand(t1));
+  __ Branch(&loop, ne, a2, Operand(t1));
+  // Hit: fetch the optimized code.
+  __ Addu(t1, a1, Operand(FixedArray::kHeaderSize - kHeapObjectTag));
+  __ sll(at, t0, kPointerSizeLog2 - kSmiTagSize);
+  __ Addu(t1, t1, Operand(at));
+  __ Addu(t1, t1, Operand(kPointerSize));
+  __ lw(t0, MemOperand(t1));
+
+  __ bind(&install_optimized);
+  __ IncrementCounter(counters->fast_new_closure_install_optimized(),
+                      1, t2, t3);
+
+  // TODO(fschneider): Idea: store proper code pointers in the map and either
+  // unmangle them on marking or do nothing as the whole map is discarded on
+  // major GC anyway.
+  __ Addu(t0, t0, Operand(Code::kHeaderSize - kHeapObjectTag));
+  __ sw(t0, FieldMemOperand(v0, JSFunction::kCodeEntryOffset));
+
+  // Now link a function into a list of optimized functions.
+  __ lw(t0, ContextOperand(a2, Context::OPTIMIZED_FUNCTIONS_LIST));
+
+  __ sw(t0, FieldMemOperand(v0, JSFunction::kNextFunctionLinkOffset));
+  // No need for write barrier as JSFunction (eax) is in the new space.
+
+  __ sw(v0, ContextOperand(a2, Context::OPTIMIZED_FUNCTIONS_LIST));
+  // Store JSFunction (eax) into edx before issuing write barrier as
+  // it clobbers all the registers passed.
+  __ mov(t0, v0);
+  __ RecordWriteContextSlot(
+      a2,
+      Context::SlotOffset(Context::OPTIMIZED_FUNCTIONS_LIST),
+      t0,
+      a1,
+      kRAHasNotBeenSaved,
+      kDontSaveFPRegs);
+
+  // Return result. The argument function info has been popped already.
   __ Ret();
 
   // Create a new closure through the slower runtime call.
@@ -3130,7 +3210,7 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
       } else {
         // Tail call that writes the int32 in a2 to the heap number in v0, using
         // a3 and a0 as scratch. v0 is preserved and returned.
-        __ mov(a0, t1);
+        __ mov(v0, t1);
         WriteInt32ToHeapNumberStub stub(a2, v0, a3, a0);
         __ TailCallStub(&stub);
       }
@@ -5043,7 +5123,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
                       1, a0, a2);
 
   // Isolates: note we add an additional parameter here (isolate pointer).
-  const int kRegExpExecuteArguments = 8;
+  const int kRegExpExecuteArguments = 9;
   const int kParameterRegisters = 4;
   __ EnterExitFrame(false, kRegExpExecuteArguments - kParameterRegisters);
 
@@ -5054,27 +5134,33 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // allocating space for the c argument slots, we don't need to calculate
   // that into the argument positions on the stack. This is how the stack will
   // look (sp meaning the value of sp at this moment):
+  // [sp + 5] - Argument 9
   // [sp + 4] - Argument 8
   // [sp + 3] - Argument 7
   // [sp + 2] - Argument 6
   // [sp + 1] - Argument 5
   // [sp + 0] - saved ra
 
-  // Argument 8: Pass current isolate address.
+  // Argument 9: Pass current isolate address.
   // CFunctionArgumentOperand handles MIPS stack argument slots.
   __ li(a0, Operand(ExternalReference::isolate_address()));
+  __ sw(a0, MemOperand(sp, 5 * kPointerSize));
+
+  // Argument 8: Indicate that this is a direct call from JavaScript.
+  __ li(a0, Operand(1));
   __ sw(a0, MemOperand(sp, 4 * kPointerSize));
 
-  // Argument 7: Indicate that this is a direct call from JavaScript.
-  __ li(a0, Operand(1));
-  __ sw(a0, MemOperand(sp, 3 * kPointerSize));
-
-  // Argument 6: Start (high end) of backtracking stack memory area.
+  // Argument 7: Start (high end) of backtracking stack memory area.
   __ li(a0, Operand(address_of_regexp_stack_memory_address));
   __ lw(a0, MemOperand(a0, 0));
   __ li(a2, Operand(address_of_regexp_stack_memory_size));
   __ lw(a2, MemOperand(a2, 0));
   __ addu(a0, a0, a2);
+  __ sw(a0, MemOperand(sp, 3 * kPointerSize));
+
+  // Argument 6: Set the number of capture registers to zero to force global
+  // regexps to behave as non-global.  This does not affect non-global regexps.
+  __ mov(a0, zero_reg);
   __ sw(a0, MemOperand(sp, 2 * kPointerSize));
 
   // Argument 5: static offsets vector buffer.
@@ -5125,7 +5211,9 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Check the result.
 
   Label success;
-  __ Branch(&success, eq, v0, Operand(NativeRegExpMacroAssembler::SUCCESS));
+  __ Branch(&success, eq, v0, Operand(1));
+  // We expect exactly one result since we force the called regexp to behave
+  // as non-global.
   Label failure;
   __ Branch(&failure, eq, v0, Operand(NativeRegExpMacroAssembler::FAILURE));
   // If not exception it can only be retry. Handle that in the runtime system.
@@ -7362,8 +7450,8 @@ static const AheadOfTimeWriteBarrierStubList kAheadOfTime[] = {
   // KeyedStoreStubCompiler::GenerateStoreFastElement.
   { REG(a3), REG(a2), REG(t0), EMIT_REMEMBERED_SET },
   { REG(a2), REG(a3), REG(t0), EMIT_REMEMBERED_SET },
-  // ElementsTransitionGenerator::GenerateSmiOnlyToObject
-  // and ElementsTransitionGenerator::GenerateSmiOnlyToDouble
+  // ElementsTransitionGenerator::GenerateMapChangeElementTransition
+  // and ElementsTransitionGenerator::GenerateSmiToDouble
   // and ElementsTransitionGenerator::GenerateDoubleToObject
   { REG(a2), REG(a3), REG(t5), EMIT_REMEMBERED_SET },
   { REG(a2), REG(a3), REG(t5), OMIT_REMEMBERED_SET },
@@ -7372,6 +7460,8 @@ static const AheadOfTimeWriteBarrierStubList kAheadOfTime[] = {
   { REG(a2), REG(t2), REG(t5), EMIT_REMEMBERED_SET },
   // StoreArrayLiteralElementStub::Generate
   { REG(t1), REG(a0), REG(t2), EMIT_REMEMBERED_SET },
+  // FastNewClosureStub::Generate
+  { REG(a2), REG(t0), REG(a1), EMIT_REMEMBERED_SET },
   // Null termination.
   { REG(no_reg), REG(no_reg), REG(no_reg), EMIT_REMEMBERED_SET}
 };
@@ -7629,9 +7719,9 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
   Label fast_elements;
 
   __ CheckFastElements(a2, t1, &double_elements);
-  // FAST_SMI_ONLY_ELEMENTS or FAST_ELEMENTS
+  // Check for FAST_*_SMI_ELEMENTS or FAST_*_ELEMENTS elements
   __ JumpIfSmi(a0, &smi_element);
-  __ CheckFastSmiOnlyElements(a2, t1, &fast_elements);
+  __ CheckFastSmiElements(a2, t1, &fast_elements);
 
   // Store into the array literal requires a elements transition. Call into
   // the runtime.
@@ -7643,7 +7733,7 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
   __ Push(t1, t0);
   __ TailCallRuntime(Runtime::kStoreArrayLiteralElement, 5, 1);
 
-  // Array literal has ElementsKind of FAST_ELEMENTS and value is an object.
+  // Array literal has ElementsKind of FAST_*_ELEMENTS and value is an object.
   __ bind(&fast_elements);
   __ lw(t1, FieldMemOperand(a1, JSObject::kElementsOffset));
   __ sll(t2, a3, kPointerSizeLog2 - kSmiTagSize);
@@ -7656,8 +7746,8 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
   __ Ret(USE_DELAY_SLOT);
   __ mov(v0, a0);
 
-  // Array literal has ElementsKind of FAST_SMI_ONLY_ELEMENTS or
-  // FAST_ELEMENTS, and value is Smi.
+  // Array literal has ElementsKind of FAST_*_SMI_ELEMENTS or FAST_*_ELEMENTS,
+  // and value is Smi.
   __ bind(&smi_element);
   __ lw(t1, FieldMemOperand(a1, JSObject::kElementsOffset));
   __ sll(t2, a3, kPointerSizeLog2 - kSmiTagSize);
@@ -7666,7 +7756,7 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
   __ Ret(USE_DELAY_SLOT);
   __ mov(v0, a0);
 
-  // Array literal has ElementsKind of FAST_DOUBLE_ELEMENTS.
+  // Array literal has ElementsKind of FAST_*_DOUBLE_ELEMENTS.
   __ bind(&double_elements);
   __ lw(t1, FieldMemOperand(a1, JSObject::kElementsOffset));
   __ StoreNumberToDoubleElements(a0, a3, a1, t1, t2, t3, t5, a2,

@@ -118,7 +118,7 @@ bool CompilationInfo::ShouldSelfOptimize() {
       FLAG_crankshaft &&
       !function()->flags()->Contains(kDontSelfOptimize) &&
       !function()->flags()->Contains(kDontOptimize) &&
-      function()->scope()->AllowsLazyRecompilation() &&
+      function()->scope()->AllowsLazyCompilation() &&
       (shared_info().is_null() || !shared_info()->optimization_disabled());
 }
 
@@ -137,9 +137,8 @@ void CompilationInfo::AbortOptimization() {
 // all. However crankshaft support recompilation of functions, so in this case
 // the full compiler need not be be used if a debugger is attached, but only if
 // break points has actually been set.
-static bool is_debugging_active() {
+static bool IsDebuggerActive(Isolate* isolate) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
-  Isolate* isolate = Isolate::Current();
   return V8::UseCrankshaft() ?
     isolate->debug()->has_break_points() :
     isolate->debugger()->IsDebuggerActive();
@@ -149,8 +148,8 @@ static bool is_debugging_active() {
 }
 
 
-static bool AlwaysFullCompiler() {
-  return FLAG_always_full_compiler || is_debugging_active();
+static bool AlwaysFullCompiler(Isolate* isolate) {
+  return FLAG_always_full_compiler || IsDebuggerActive(isolate);
 }
 
 
@@ -205,7 +204,7 @@ static bool MakeCrankshaftCode(CompilationInfo* info) {
   // Fall back to using the full code generator if it's not possible
   // to use the Hydrogen-based optimizing compiler. We already have
   // generated code for this from the shared function object.
-  if (AlwaysFullCompiler()) {
+  if (AlwaysFullCompiler(info->isolate())) {
     info->SetCode(code);
     return true;
   }
@@ -294,8 +293,9 @@ static bool MakeCrankshaftCode(CompilationInfo* info) {
   }
 
   Handle<Context> global_context(info->closure()->context()->global_context());
-  TypeFeedbackOracle oracle(code, global_context, info->isolate());
-  HGraphBuilder builder(info, &oracle);
+  TypeFeedbackOracle oracle(code, global_context, info->isolate(),
+                            info->isolate()->zone());
+  HGraphBuilder builder(info, &oracle, info->isolate()->zone());
   HPhase phase(HPhase::kTotal);
   HGraph* graph = builder.CreateGraph();
   if (info->isolate()->has_pending_exception()) {
@@ -304,7 +304,7 @@ static bool MakeCrankshaftCode(CompilationInfo* info) {
   }
 
   if (graph != NULL) {
-    Handle<Code> optimized_code = graph->Compile(info);
+    Handle<Code> optimized_code = graph->Compile(info, graph->zone());
     if (!optimized_code.is_null()) {
       info->SetCode(optimized_code);
       FinishOptimization(info->closure(), start);
@@ -346,7 +346,8 @@ bool Compiler::MakeCodeForLiveEdit(CompilationInfo* info) {
   // the compilation info is set if compilation succeeded.
   bool succeeded = MakeCode(info);
   if (!info->shared_info().is_null()) {
-    Handle<ScopeInfo> scope_info = ScopeInfo::Create(info->scope());
+    Handle<ScopeInfo> scope_info = ScopeInfo::Create(info->scope(),
+                                                     info->isolate()->zone());
     info->shared_info()->set_scope_info(*scope_info);
   }
   return succeeded;
@@ -420,7 +421,7 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
           lit->name(),
           lit->materialized_literal_count(),
           info->code(),
-          ScopeInfo::Create(info->scope()));
+          ScopeInfo::Create(info->scope(), info->isolate()->zone()));
 
   ASSERT_EQ(RelocInfo::kNoPosition, lit->function_token_position());
   Compiler::SetFunctionInfo(result, lit, true, script);
@@ -462,7 +463,7 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
       script, Debugger::NO_AFTER_COMPILE_FLAGS);
 #endif
 
-  live_edit_tracker.RecordFunctionInfo(result, lit);
+  live_edit_tracker.RecordFunctionInfo(result, lit, isolate->zone());
 
   return result;
 }
@@ -614,6 +615,25 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
   int compiled_size = shared->end_position() - shared->start_position();
   isolate->counters()->total_compile_size()->Increment(compiled_size);
 
+  if (FLAG_cache_optimized_code && info->IsOptimizing()) {
+    Handle<JSFunction> function = info->closure();
+    ASSERT(!function.is_null());
+    Handle<Context> global_context(function->context()->global_context());
+    int index = function->shared()->SearchOptimizedCodeMap(*global_context);
+    if (index > 0) {
+      if (FLAG_trace_opt) {
+        PrintF("  [Found optimized code for");
+        function->PrintName();
+        PrintF("\n");
+      }
+      Code* code = Code::cast(
+          FixedArray::cast(shared->optimized_code_map())->get(index));
+      ASSERT(code != NULL);
+      function->ReplaceCode(code);
+      return true;
+    }
+  }
+
   // Generate the AST for the lazily compiled function.
   if (ParserApi::Parse(info, kNoParsingFlags)) {
     // Measure how long it takes to do the lazy compilation; only take the
@@ -645,13 +665,34 @@ bool Compiler::CompileLazy(CompilationInfo* info) {
       if (info->IsOptimizing()) {
         ASSERT(shared->scope_info() != ScopeInfo::Empty());
         function->ReplaceCode(*code);
+        if (FLAG_cache_optimized_code &&
+            code->kind() == Code::OPTIMIZED_FUNCTION) {
+          Handle<SharedFunctionInfo> shared(function->shared());
+          Handle<Context> global_context(function->context()->global_context());
+
+          // Create literals array that will be shared for this global context.
+          int number_of_literals = shared->num_literals();
+          Handle<FixedArray> literals =
+              isolate->factory()->NewFixedArray(number_of_literals);
+          if (number_of_literals > 0) {
+            // Store the object, regexp and array functions in the literals
+            // array prefix.  These functions will be used when creating
+            // object, regexp and array literals in this function.
+            literals->set(JSFunction::kLiteralGlobalContextIndex,
+                          function->context()->global_context());
+          }
+
+          SharedFunctionInfo::AddToOptimizedCodeMap(
+              shared, global_context, code, literals);
+        }
       } else {
         // Update the shared function info with the compiled code and the
         // scope info.  Please note, that the order of the shared function
         // info initialization is important since set_scope_info might
         // trigger a GC, causing the ASSERT below to be invalid if the code
         // was flushed. By setting the code object last we avoid this.
-        Handle<ScopeInfo> scope_info = ScopeInfo::Create(info->scope());
+        Handle<ScopeInfo> scope_info =
+            ScopeInfo::Create(info->scope(), info->isolate()->zone());
         shared->set_scope_info(*scope_info);
         shared->set_code(*code);
         if (!function.is_null()) {
@@ -716,8 +757,14 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
   // builtins cannot be handled lazily by the parser, since we have to know
   // if a function uses the special natives syntax, which is something the
   // parser records.
+  // If the debugger requests compilation for break points, we cannot be
+  // aggressive about lazy compilation, because it might trigger compilation
+  // of functions without an outer context when setting a breakpoint through
+  // Runtime::FindSharedFunctionInfoInScript.
+  bool allow_lazy_without_ctx = literal->AllowsLazyCompilationWithoutContext();
   bool allow_lazy = literal->AllowsLazyCompilation() &&
-      !LiveEditFunctionTracker::IsActive(info.isolate());
+      !LiveEditFunctionTracker::IsActive(info.isolate()) &&
+      (!info.isolate()->DebuggerHasBreakPoints() || allow_lazy_without_ctx);
 
   Handle<ScopeInfo> scope_info(ScopeInfo::Empty());
 
@@ -728,7 +775,7 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
   } else if ((V8::UseCrankshaft() && MakeCrankshaftCode(&info)) ||
              (!V8::UseCrankshaft() && FullCodeGenerator::MakeCode(&info))) {
     ASSERT(!info.code().is_null());
-    scope_info = ScopeInfo::Create(info.scope());
+    scope_info = ScopeInfo::Create(info.scope(), info.isolate()->zone());
   } else {
     return Handle<SharedFunctionInfo>::null();
   }
@@ -742,12 +789,13 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
   SetFunctionInfo(result, literal, false, script);
   RecordFunctionCompilation(Logger::FUNCTION_TAG, &info, result);
   result->set_allows_lazy_compilation(allow_lazy);
+  result->set_allows_lazy_compilation_without_context(allow_lazy_without_ctx);
 
   // Set the expected number of properties for instances and return
   // the resulting function.
   SetExpectedNofPropertiesFromEstimate(result,
                                        literal->expected_property_count());
-  live_edit_tracker.RecordFunctionInfo(result, literal);
+  live_edit_tracker.RecordFunctionInfo(result, literal, info.isolate()->zone());
   return result;
 }
 
@@ -774,6 +822,8 @@ void Compiler::SetFunctionInfo(Handle<SharedFunctionInfo> function_info,
       lit->has_only_simple_this_property_assignments(),
       *lit->this_property_assignments());
   function_info->set_allows_lazy_compilation(lit->AllowsLazyCompilation());
+  function_info->set_allows_lazy_compilation_without_context(
+      lit->AllowsLazyCompilationWithoutContext());
   function_info->set_language_mode(lit->language_mode());
   function_info->set_uses_arguments(lit->scope()->arguments() != NULL);
   function_info->set_has_duplicate_parameters(lit->has_duplicate_parameters());
