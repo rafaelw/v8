@@ -2164,6 +2164,11 @@ MaybeObject* JSReceiver::SetProperty(String* name,
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
        oldValue = result.GetLazyValue();
+    } else if (result.IsFound() &&
+               result.type() == CALLBACKS &&
+               IsJSArray() &&
+               GetHeap()->length_symbol()->Equals(name)) {
+        oldValue = JSArray::cast(this)->length();
     }
 
     ObjectObservation::EnqueueObservationChange(isolate, JSObject::cast(this), name, VALUE_MUTATION, oldValue);
