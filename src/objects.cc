@@ -2164,14 +2164,10 @@ MaybeObject* JSReceiver::SetProperty(String* name,
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
        oldValue = result.GetLazyValue();
-    } else if (result.IsFound() &&
-               result.type() == CALLBACKS &&
-               IsJSArray() &&
-               GetHeap()->length_symbol()->Equals(name)) {
-        oldValue = JSArray::cast(this)->length();
     }
 
-    ObjectObservation::EnqueueObservationChange(isolate, JSObject::cast(this), name, VALUE_MUTATION, oldValue);
+    if (!result.IsFound() || result.type() != CALLBACKS)
+      ObjectObservation::EnqueueObservationChange(isolate, JSObject::cast(this), name, VALUE_MUTATION, oldValue);
   }
 
   return SetProperty(&result, name, value, attributes, strict_mode, store_mode);
@@ -9045,6 +9041,7 @@ void JSArray::Expand(int required_size) {
 MaybeObject* JSArray::SetElementsLength(Object* len) {
   // We should never end in here with a pixel or external array.
   ASSERT(AllowsSetElementsLength());
+  EnqueueLengthChange(this);
   return GetElementsAccessor()->SetLength(this, len);
 }
 
