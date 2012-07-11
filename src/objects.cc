@@ -80,7 +80,9 @@ static int compare_callback_functions(const ObservationChangeRecord* x,
 // Sort the property changes based on callback functions (observers)
 int compare_callback_functions(const ObservationChangeRecord* x, 
       const ObservationChangeRecord* y) {
-  return *x->observerFn > *y->observerFn;
+  if (*x->observerFn == *y->observerFn)
+    return 0;
+  return *x->observerFn > *y->observerFn ? 1 : -1;
 }
 
 bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
