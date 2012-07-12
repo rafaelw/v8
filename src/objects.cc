@@ -58,32 +58,15 @@ namespace internal {
 
 
 // Object observation
-const char *kHiddenChangeObserversStr = "___changeObservers";
+const char kHiddenChangeObserversStr[] = "___changeObservers";
+const char kHiddenChangeRecordsStr[] = "___changeRecords";
 enum ObjectMutationType {
   VALUE_MUTATION,
   DESCRIPTOR_CHANGE
 };
-struct ObservationChangeRecord {
-  Object** object;
-  Object** observerFn; // for sorting purposes
-  Object** name;
-  int type;
-  Object** old_value;
-};
-typedef List<ObservationChangeRecord> ObservationsList;
-static ObservationsList* enqueued_observation_changes_ = NULL;
+typedef List<JSFunction**> ObserverList;
+static ObserverList* active_observers_ = NULL;
 
-
-static int compare_callback_functions(const ObservationChangeRecord* x, 
-      const ObservationChangeRecord* y);
-
-// Sort the property changes based on callback functions (observers)
-int compare_callback_functions(const ObservationChangeRecord* x, 
-      const ObservationChangeRecord* y) {
-  if (*x->observerFn == *y->observerFn)
-    return 0;
-  return *x->observerFn > *y->observerFn ? 1 : -1;
-}
 
 bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
   HandleScope scope(isolate);
@@ -93,162 +76,211 @@ bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
     return false;
 
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
-  Handle<Object> observerFn = Handle<Object>(jsObject->GetHiddenProperty(*key));
+      Vector<const char>(kHiddenChangeObserversStr,
+                         sizeof(kHiddenChangeObserversStr) - 1));
+  Object* observers = jsObject->GetHiddenProperty(*key);
+  if (observers->IsUndefined())
+    return false;
+  FixedArray* observerArray = FixedArray::cast(observers);
+  for (int i = 0; i < observerArray->length(); ++i) {
+    if (observerArray->get(i)->IsJSFunction())
+      return true;
+  }
 
-  return observerFn->IsJSFunction();
+  return false;
 }
 
-void ObjectObservation::Observe(Isolate* isolate, JSObject* object, JSObject* observer) {
-  Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
-
-  USE(object->SetHiddenProperty(*key, observer));
-}
-
-void ObjectObservation::Unobserve(Isolate* isolate, JSObject* object, JSObject* observer) {
-  Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
-  object->DeleteHiddenProperty(*key);
-}
-
-void ObjectObservation::EnqueueObservationChange(Isolate* isolate, JSObject* obj, String* name, int type, Object* old_value) {
+void ObjectObservation::Observe(Isolate* isolate,
+                                JSObject* object,
+                                JSObject* observer) {
   HandleScope scope(isolate);
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
-  Handle<Object> observerFn = Handle<Object>(obj->GetHiddenProperty(*key));
+      Vector<const char>(kHiddenChangeObserversStr,
+                         sizeof(kHiddenChangeObserversStr) - 1));
+  Object* observers = object->GetHiddenProperty(*key);
+  if (observers->IsUndefined()) {
+    Handle<FixedArray> observersArray = isolate->factory()->NewFixedArray(1);
+    USE(object->SetHiddenProperty(*key, *observersArray));
+    observersArray->set(0, observer);
+    return;
+  }
+  Handle<FixedArray> observerArray(FixedArray::cast(observers));
+  int length = observerArray->length();
+  int hole_index = -1;
+  for (int i = 0; i < length; ++i) {
+    if (observerArray->get(i) == observer)
+      return;
+    if (observerArray->is_the_hole(i))
+      hole_index = i;
+  }
 
-  if (!enqueued_observation_changes_)
-    enqueued_observation_changes_ = new List<ObservationChangeRecord>;
+  if (hole_index) {
+    observerArray->set(hole_index, observer);
+    return;
+  }
 
-  ObservationChangeRecord record;
-  Handle<Object> handle = isolate->global_handles()->Create(obj);
-  Handle<Object> observerHandle = isolate->global_handles()->Create(*observerFn);
-  Handle<Object> oldValueHandle;
-  if (old_value)
-    oldValueHandle = isolate->global_handles()->Create(old_value);
-
-  record.object = handle.location();
-  record.observerFn = observerHandle.location();
-  record.name = isolate->global_handles()->Create(name).location();
-  record.type = type;
-  record.old_value = old_value ? oldValueHandle.location() : NULL;
-
-  enqueued_observation_changes_->Add(record);
+  Object* new_array = 0;
+  { MaybeObject* maybe_array = observerArray->CopySize(length + 1);
+    if (!maybe_array->ToObject(&new_array)) return;
+  }
+  FixedArray::cast(new_array)->set(length, observer);
+  USE(object->SetHiddenProperty(*key, new_array));
 }
 
-// FIXME: We shouldn't be returning a Handle here (handleScope thing).
-static Handle<JSArray> createChangeRecordArray(List<ObservationChangeRecord> *changes, int startIndex, int endIndex) {
-  Isolate* isolate = Isolate::Current();
-  Factory* factory = isolate->factory();
-  //HandleScope scope(isolate);
+void ObjectObservation::Unobserve(Isolate* isolate,
+                                  JSObject* object,
+                                  JSObject* observer) {
+  HandleScope scope(isolate);
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr,
+                         sizeof(kHiddenChangeObserversStr) - 1));
+  Object* observers = object->GetHiddenProperty(*key);
+  if (observers->IsUndefined())
+    return;
+  Handle<FixedArray> observerArray(FixedArray::cast(observers));
+  int length = observerArray->length();
+  for (int i = 0; i < length; ++i) {
+    if (observerArray->get(i) == observer) {
+      observerArray->set_the_hole(i);
+      return;
+    }
+  }
+}
 
-  Handle<String> key = factory->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr, sizeof(kHiddenChangeObserversStr) - 1));
+static JSObject* CreateChangeRecord(Isolate* isolate, Object* object,
+                                    Object* name, int type, Object* old_value) {
+  Factory* factory = isolate->factory();
+
+  Handle<JSObject> recordObject =
+      factory->NewJSObject(isolate->object_function(), TENURED);
+
   Handle<String> name_sym = factory->LookupAsciiSymbol(
       Vector<const char>("name", sizeof("name") - 1));
   Handle<String> type_sym = factory->NewStringFromAscii(CStrVector("type"));
   Handle<String> value_sym = factory->NewStringFromAscii(CStrVector("value"));
-  Handle<String> descriptor_sym = factory->NewStringFromAscii(CStrVector("descriptor"));
+  Handle<String> descriptor_sym =
+      factory->NewStringFromAscii(CStrVector("descriptor"));
   Handle<String> object_sym = factory->NewStringFromAscii(CStrVector("object"));
-  Handle<String> old_value_sym = factory->NewStringFromAscii(CStrVector("oldValue"));
+  Handle<String> old_value_sym =
+      factory->NewStringFromAscii(CStrVector("oldValue"));
 
-  // build the array of changes records
-  int count = endIndex - startIndex;
-  Handle<FixedArray> records_sent = factory->NewFixedArray(count);
-  MaybeObject* ignore;
-  for (int i = 0; i < count; i++) {
-    ObservationChangeRecord& theChangeRecord = changes->at(startIndex+i);
-    Handle<JSObject> recordObject =
-        factory->NewJSObject(isolate->object_function(), TENURED);
+  USE(recordObject->SetProperty(*object_sym, object, NONE, kNonStrictMode));
+  USE(recordObject->SetProperty(*name_sym, name, NONE, kNonStrictMode));
+  USE(recordObject->SetProperty(
+      *type_sym,
+      Object::cast(type == VALUE_MUTATION ? *value_sym : *descriptor_sym),
+      NONE, kNonStrictMode));
+  USE(recordObject->SetProperty(
+      *old_value_sym,
+      old_value != NULL
+        ? Object::cast(old_value)
+        : isolate->heap()->undefined_value(),
+      NONE, kNonStrictMode));
 
-    ignore = recordObject->SetProperty(
-        *name_sym,
-        *theChangeRecord.name,
-        NONE, kNonStrictMode);
-    ignore = recordObject->SetProperty(
-        *type_sym,
-        Object::cast((theChangeRecord.type == VALUE_MUTATION) ? *value_sym : *descriptor_sym),
-        NONE, kNonStrictMode);
-    ignore = recordObject->SetProperty(
-        *object_sym,
-        *theChangeRecord.object,
-        NONE, kNonStrictMode);
-    ignore = recordObject->SetProperty(
-        *old_value_sym,
-        theChangeRecord.old_value != NULL ? Object::cast(*theChangeRecord.old_value) : isolate->heap()->undefined_value(),
-        NONE, kNonStrictMode);
+  return *recordObject;
+}
 
-    USE(ignore);
-    records_sent->set(i, *recordObject);
+static void AddRecordToObserver(Isolate* isolate,
+                                JSFunction* observer,
+                                JSObject* changeRecord) {
+  Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeRecordsStr,
+                         sizeof(kHiddenChangeRecordsStr) - 1));
+  Object* records = observer->GetHiddenProperty(*recordsKey);
+  if (!records || records->IsUndefined()) {
+    Handle<JSArray> recordsArray = isolate->factory()->NewJSArray(1);
+    USE(recordsArray->SetElement(0, changeRecord, NONE, kNonStrictMode));
+    USE(observer->SetHiddenProperty(*recordsKey, *recordsArray));
+    return;
   }
+  JSArray* recordsArray = JSArray::cast(records);
+  USE(recordsArray->SetElement(
+      Smi::cast(recordsArray->length())->value(),
+      changeRecord, NONE, kNonStrictMode));
+}
 
-  return factory->NewJSArrayWithElements(records_sent);
+static inline bool IsActiveObserver(JSFunction* observer) {
+  if (!active_observers_)
+    return false;
+  for (int i = 0; i < active_observers_->length(); ++i) {
+    if (*active_observers_->at(i) == observer)
+      return true;
+  }
+  return false;
+}
+
+void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
+                                                 JSObject* obj,
+                                                 String* name,
+                                                 int type,
+                                                 Object* old_value) {
+  HandleScope scope(isolate);
+  Handle<String> observersKey = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeObserversStr,
+                         sizeof(kHiddenChangeObserversStr) - 1));
+  Object* observers = obj->GetHiddenProperty(*observersKey);
+  if (observers->IsUndefined())
+    return;
+  FixedArray* observersArray = FixedArray::cast(observers);
+  for (int i = 0; i < observersArray->length(); ++i) {
+    if (observersArray->is_the_hole(i))
+      continue;
+    JSFunction* observer = JSFunction::cast(observersArray->get(i));
+    AddRecordToObserver(
+        isolate, observer,
+        CreateChangeRecord(isolate, obj, name, type, old_value));
+
+    if (!active_observers_)
+      active_observers_ = new ObserverList;
+
+    if (!IsActiveObserver(observer)) {
+      Handle<Object> handle = isolate->global_handles()->Create(observer);
+      active_observers_->Add(Handle<JSFunction>::cast(handle).location());
+    }
+  }
 }
 
 void FireObjectObservations() {
-  if (!enqueued_observation_changes_)
+  if (!active_observers_)
     return;
 
   Isolate* isolate = Isolate::Current();
   Factory* factory = isolate->factory();
   HandleScope scope(isolate);
 
-  // protect against items that may be scheduled during the callbacks
-  List<ObservationChangeRecord> *changes = enqueued_observation_changes_;
-  enqueued_observation_changes_ = NULL;
+  // FIXME: Should loop until active observers is non-empty
+  ObserverList* active_observers = active_observers_;
+  active_observers_ = NULL;
 
-  // Sort the list based on the callbackFn objects, then we'll
-  // deliver #n unique callbacks.
-  changes->Sort(compare_callback_functions);
+  Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenChangeRecordsStr,
+                         sizeof(kHiddenChangeRecordsStr) - 1));
 
-  // the array is now chunked, and we want to dispatch 
-  int startIndex = 0;
-  int endIndex = 0;
+  for (int i = 0; i < active_observers->length(); ++i) {
+    Handle<JSFunction> observerFn(active_observers->at(i));
+    Handle<Object> records(observerFn->GetHiddenProperty(*recordsKey));
+    ASSERT(!records->IsUndefined());
+    observerFn->DeleteHiddenProperty(*recordsKey);
 
-  while (endIndex < changes->length()) {
-    Object* curObservationObject = *(changes->at(startIndex).observerFn);
+    // FIXME: Fix this to be something reasonable
+    Handle<JSObject> this_handle = Handle<JSObject>::cast(observerFn);
 
-    while (endIndex < changes->length() && 
-            *(changes->at(endIndex).observerFn) == curObservationObject) {
-      endIndex++;
-    }
-
-    if (endIndex != startIndex) {
-      Handle<JSArray> recordArray = createChangeRecordArray(changes, startIndex, endIndex);
-      JSObject* this_handle = JSObject::cast(*(changes->at(startIndex).object));
-
-      // call back the observer fn
-      //JSObject* this_handle = JSObject::cast(*(record.object));
-      Handle<Object> callbackFn(*(changes->at(startIndex).observerFn));
-
-      bool has_pending_exception = false;
-      Handle<Object> args[] = { recordArray };
-      Execution::Call(callbackFn, Handle<Object>(this_handle), 1, args, &has_pending_exception);
-    }
-
-    startIndex = endIndex;
-    endIndex++;
-  }
-  
-  // remove the handles
-  for (int i = 0; i < changes->length(); ++i) {
-    ObservationChangeRecord& record = changes->at(i);
-    isolate->global_handles()->Destroy(record.object);
-    isolate->global_handles()->Destroy(record.observerFn);
-    isolate->global_handles()->Destroy(record.name);
-    if (record.old_value)
-      isolate->global_handles()->Destroy(record.old_value);
+    bool has_pending_exception = false;
+    Handle<Object> args[] = { records };
+    Execution::Call(observerFn, this_handle, 1, args, &has_pending_exception);
+    isolate->global_handles()->Destroy(
+        Handle<Object>::cast(observerFn).location());
   }
 
-  delete changes;
+  delete active_observers;
 }
 
 static inline void EnqueueLengthChange(JSArray* obj) {
   Heap* heap = obj->GetHeap();
   Isolate* isolate = heap->isolate();
   if (ObjectObservation::IsObserved(isolate, obj)) {
-    ObjectObservation::EnqueueObservationChange(isolate, obj, heap->length_symbol(), VALUE_MUTATION, obj->length());
+    ObjectObservation::EnqueueObservationChange(
+        isolate, obj, heap->length_symbol(), VALUE_MUTATION, obj->length());
   }
 }
 
