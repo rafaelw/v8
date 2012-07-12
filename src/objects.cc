@@ -64,7 +64,7 @@ enum ObjectMutationType {
   VALUE_MUTATION,
   DESCRIPTOR_CHANGE
 };
-typedef List<JSFunction**> ObserverList;
+typedef List<Handle<JSFunction> > ObserverList;
 static ObserverList* active_observers_ = NULL;
 
 
@@ -235,7 +235,7 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
 
     if (!IsActiveObserver(observer)) {
       Handle<Object> handle = isolate->global_handles()->Create(observer);
-      active_observers_->Add(Handle<JSFunction>::cast(handle).location());
+      active_observers_->Add(Handle<JSFunction>::cast(handle));
     }
   }
 }
@@ -257,7 +257,7 @@ void FireObjectObservations() {
                          sizeof(kHiddenChangeRecordsStr) - 1));
 
   for (int i = 0; i < active_observers->length(); ++i) {
-    Handle<JSFunction> observerFn(active_observers->at(i));
+    Handle<JSFunction> observerFn = active_observers->at(i);
     Handle<Object> records(observerFn->GetHiddenProperty(*recordsKey));
     ASSERT(!records->IsUndefined());
     observerFn->DeleteHiddenProperty(*recordsKey);
