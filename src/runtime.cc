@@ -10089,13 +10089,15 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GlobalPrint) {
 RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectObserve) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
-  CONVERT_ARG_CHECKED(JSObject, obj, 0);
-  CONVERT_ARG_CHECKED(JSObject, observer, 1);
-  RUNTIME_ASSERT(observer->IsJSFunction());
+  CONVERT_ARG_CHECKED(JSObject, raw_object, 0);
+  CONVERT_ARG_CHECKED(JSObject, raw_observer, 1);
+  RUNTIME_ASSERT(raw_observer->IsJSFunction());
 
   // TODO SetInternalField() for optimziation?
 
-  ObjectObservation::Observe(isolate, obj, observer);
+  Handle<JSObject> object(raw_object);
+  Handle<JSObject> observer(raw_observer);
+  ObjectObservation::Observe(isolate, object, observer);
   return isolate->heap()->undefined_value();
 }
 

@@ -91,40 +91,42 @@ bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
 }
 
 void ObjectObservation::Observe(Isolate* isolate,
-                                JSObject* object,
-                                JSObject* observer) {
+                                Handle<JSObject> object,
+                                Handle<JSObject> observer) {
   HandleScope scope(isolate);
   Handle<String> key = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeObserversStr,
                          sizeof(kHiddenChangeObserversStr) - 1));
   Object* observers = object->GetHiddenProperty(*key);
   if (observers->IsUndefined()) {
-    Handle<FixedArray> observersArray = isolate->factory()->NewFixedArray(1);
-    USE(object->SetHiddenProperty(*key, *observersArray));
-    observersArray->set(0, observer);
+    Handle<FixedArray> observers_array = isolate->factory()->NewFixedArray(1);
+    observers_array->set(0, *observer);
+    CHECK_NOT_EMPTY_HANDLE(
+        isolate,
+        JSObject::SetHiddenProperty(object, key, observers_array));
     return;
   }
-  Handle<FixedArray> observerArray(FixedArray::cast(observers));
-  int length = observerArray->length();
+  Handle<FixedArray> observer_array(FixedArray::cast(observers));
+  int length = observer_array->length();
   int hole_index = -1;
   for (int i = 0; i < length; ++i) {
-    if (observerArray->get(i) == observer)
+    if (observer_array->get(i) == *observer)
       return;
-    if (observerArray->is_the_hole(i))
+    if (observer_array->is_the_hole(i))
       hole_index = i;
   }
 
   if (hole_index) {
-    observerArray->set(hole_index, observer);
+    observer_array->set(hole_index, *observer);
     return;
   }
 
-  Object* new_array = 0;
-  { MaybeObject* maybe_array = observerArray->CopySize(length + 1);
-    if (!maybe_array->ToObject(&new_array)) return;
-  }
-  FixedArray::cast(new_array)->set(length, observer);
-  USE(object->SetHiddenProperty(*key, new_array));
+  Handle<FixedArray> new_array = isolate->factory()->NewFixedArray(length + 1);
+  observer_array->CopyTo(0, *new_array, 0, length);
+  new_array->set(length, *observer);
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSObject::SetHiddenProperty(object, key, new_array));
 }
 
 void ObjectObservation::Unobserve(Isolate* isolate,
@@ -147,8 +149,12 @@ void ObjectObservation::Unobserve(Isolate* isolate,
   }
 }
 
-static JSObject* CreateChangeRecord(Isolate* isolate, Object* object,
-                                    Object* name, int type, Object* old_value) {
+static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
+                                           Handle<Object> object,
+                                           Handle<Object> name, int type,
+                                           Handle<Object> old_value) {
+  HandleScope scope(isolate);
+
   Factory* factory = isolate->factory();
 
   Handle<JSObject> recordObject =
@@ -157,46 +163,65 @@ static JSObject* CreateChangeRecord(Isolate* isolate, Object* object,
   Handle<String> name_sym = factory->LookupAsciiSymbol(
       Vector<const char>("name", sizeof("name") - 1));
   Handle<String> type_sym = factory->NewStringFromAscii(CStrVector("type"));
-  Handle<String> value_sym = factory->NewStringFromAscii(CStrVector("value"));
-  Handle<String> descriptor_sym =
-      factory->NewStringFromAscii(CStrVector("descriptor"));
   Handle<String> object_sym = factory->NewStringFromAscii(CStrVector("object"));
   Handle<String> old_value_sym =
       factory->NewStringFromAscii(CStrVector("oldValue"));
 
-  USE(recordObject->SetProperty(*object_sym, object, NONE, kNonStrictMode));
-  USE(recordObject->SetProperty(*name_sym, name, NONE, kNonStrictMode));
-  USE(recordObject->SetProperty(
-      *type_sym,
-      Object::cast(type == VALUE_MUTATION ? *value_sym : *descriptor_sym),
-      NONE, kNonStrictMode));
-  USE(recordObject->SetProperty(
-      *old_value_sym,
-      old_value != NULL
-        ? Object::cast(old_value)
-        : isolate->heap()->undefined_value(),
-      NONE, kNonStrictMode));
+  Handle<Object> value_sym = factory->NewStringFromAscii(CStrVector("value"));
+  Handle<Object> descriptor_sym =
+      factory->NewStringFromAscii(CStrVector("descriptor"));
+  Handle<Object> type_value(type == VALUE_MUTATION
+                            ? value_sym.location()
+                            : descriptor_sym.location());
 
-  return *recordObject;
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSReceiver::SetProperty(recordObject, object_sym, object, NONE,
+                              kNonStrictMode));
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSReceiver::SetProperty(recordObject, name_sym, name, NONE,
+                              kNonStrictMode));
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSReceiver::SetProperty(recordObject, type_sym, type_value, NONE,
+                              kNonStrictMode));
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSReceiver::SetProperty(
+          recordObject, old_value_sym,
+          !old_value.is_null()
+          ? old_value
+          : Handle<Object>(isolate->heap()->undefined_value()),
+          NONE, kNonStrictMode));
+
+  return scope.CloseAndEscape(recordObject);
 }
 
 static void AddRecordToObserver(Isolate* isolate,
-                                JSFunction* observer,
-                                JSObject* changeRecord) {
-  Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
+                                Handle<JSFunction> observer,
+                                Handle<JSObject> change_record) {
+  Handle<String> records_key = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeRecordsStr,
                          sizeof(kHiddenChangeRecordsStr) - 1));
-  Object* records = observer->GetHiddenProperty(*recordsKey);
+  Object* records = observer->GetHiddenProperty(*records_key);
   if (!records || records->IsUndefined()) {
-    Handle<JSArray> recordsArray = isolate->factory()->NewJSArray(1);
-    USE(recordsArray->SetElement(0, changeRecord, NONE, kNonStrictMode));
-    USE(observer->SetHiddenProperty(*recordsKey, *recordsArray));
+    Handle<JSArray> records_array = isolate->factory()->NewJSArray(1);
+    CHECK_NOT_EMPTY_HANDLE(
+        isolate,
+        JSObject::SetElement(records_array, 0, change_record, NONE,
+                             kNonStrictMode));
+    CHECK_NOT_EMPTY_HANDLE(
+        isolate,
+        JSObject::SetHiddenProperty(observer, records_key, records_array));
     return;
   }
-  JSArray* recordsArray = JSArray::cast(records);
-  USE(recordsArray->SetElement(
-      Smi::cast(recordsArray->length())->value(),
-      changeRecord, NONE, kNonStrictMode));
+  Handle<JSArray> records_array(JSArray::cast(records));
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSObject::SetElement(records_array,
+                           Smi::cast(records_array->length())->value(),
+                           change_record, NONE, kNonStrictMode));
 }
 
 static inline bool IsActiveObserver(JSFunction* observer) {
@@ -215,26 +240,30 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
                                                  int type,
                                                  Object* old_value) {
   HandleScope scope(isolate);
-  Handle<String> observersKey = isolate->factory()->NewStringFromAscii(
+  Handle<JSObject> object_handle(obj);
+  Handle<String> name_handle(name);
+  Handle<Object> old_value_handle(old_value);
+  Handle<String> observers_key = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeObserversStr,
                          sizeof(kHiddenChangeObserversStr) - 1));
-  Object* observers = obj->GetHiddenProperty(*observersKey);
+  Object* observers = obj->GetHiddenProperty(*observers_key);
   if (observers->IsUndefined())
     return;
-  FixedArray* observersArray = FixedArray::cast(observers);
-  for (int i = 0; i < observersArray->length(); ++i) {
-    if (observersArray->is_the_hole(i))
+  FixedArray* observers_array = FixedArray::cast(observers);
+  for (int i = 0; i < observers_array->length(); ++i) {
+    if (observers_array->is_the_hole(i))
       continue;
-    JSFunction* observer = JSFunction::cast(observersArray->get(i));
+    Handle<JSFunction> observer(JSFunction::cast(observers_array->get(i)));
     AddRecordToObserver(
         isolate, observer,
-        CreateChangeRecord(isolate, obj, name, type, old_value));
+        CreateChangeRecord(
+            isolate, object_handle, name_handle, type, old_value_handle));
 
     if (!active_observers_)
       active_observers_ = new ObserverList;
 
-    if (!IsActiveObserver(observer)) {
-      Handle<Object> handle = isolate->global_handles()->Create(observer);
+    if (!IsActiveObserver(*observer)) {
+      Handle<Object> handle = isolate->global_handles()->Create(*observer);
       active_observers_->Add(Handle<JSFunction>::cast(handle));
     }
   }
@@ -2192,15 +2221,17 @@ MaybeObject* JSReceiver::SetProperty(String* name,
   LocalLookup(name, &result);
 
   if (ObjectObservation::IsObserved(isolate, this)) {
-    Object* oldValue = NULL;
+    Object* old_value = NULL;
     if (result.IsFound() && (result.type() == NORMAL ||
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
-       oldValue = result.GetLazyValue();
+      old_value = result.GetLazyValue();
     }
 
-    if (!result.IsFound() || result.type() != CALLBACKS)
-      ObjectObservation::EnqueueObservationChange(isolate, JSObject::cast(this), name, VALUE_MUTATION, oldValue);
+    if (!result.IsFound() || result.type() != CALLBACKS) {
+      ObjectObservation::EnqueueObservationChange(
+          isolate, JSObject::cast(this), name, VALUE_MUTATION, old_value);
+    }
   }
 
   return SetProperty(&result, name, value, attributes, strict_mode, store_mode);

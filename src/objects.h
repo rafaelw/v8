@@ -8700,9 +8700,12 @@ class VisitorSynchronization : public AllStatic {
 class ObjectObservation {
  public:
   static bool IsObserved(Isolate* isolate, JSReceiver* object);
-  static void Observe(Isolate* isolate, JSObject* object, JSObject* observer);
+  static void Observe(Isolate* isolate,
+                      Handle<JSObject> object, Handle<JSObject> observer);
   static void Unobserve(Isolate* isolate, JSObject* object, JSObject* observer);
-  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj, String* name, int type, Object* old_value);
+  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
+                                       String* name, int type,
+                                       Object* old_value);
 };
 // Abstract base class for visiting, and optionally modifying, the
 // pointers contained in Objects. Used in GC and serialization/deserialization.
