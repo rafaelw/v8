@@ -262,12 +262,11 @@ void FireObjectObservations() {
     ASSERT(!records->IsUndefined());
     observerFn->DeleteHiddenProperty(*recordsKey);
 
-    // FIXME: Fix this to be something reasonable
-    Handle<JSObject> this_handle = Handle<JSObject>::cast(observerFn);
-
-    bool has_pending_exception = false;
+    Handle<Object> this_handle(isolate->heap()->undefined_value());
     Handle<Object> args[] = { records };
-    Execution::Call(observerFn, this_handle, 1, args, &has_pending_exception);
+    bool has_pending_exception = false;
+    Execution::Call(
+        observerFn, this_handle, 1, args, &has_pending_exception, true);
     isolate->global_handles()->Destroy(
         Handle<Object>::cast(observerFn).location());
   }
