@@ -1702,6 +1702,9 @@ Isolate::~Isolate() {
   delete external_reference_table_;
   external_reference_table_ = NULL;
 
+  delete active_observers_;
+  active_observers_ = NULL;
+
 #ifdef ENABLE_DEBUGGER_SUPPORT
   delete debugger_;
   debugger_ = NULL;

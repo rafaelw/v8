@@ -64,8 +64,6 @@ enum ObjectMutationType {
   VALUE_MUTATION,
   DESCRIPTOR_CHANGE
 };
-typedef List<Handle<JSFunction> > ObserverList;
-static ObserverList* active_observers_ = NULL;
 
 
 bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
@@ -224,11 +222,11 @@ static void AddRecordToObserver(Isolate* isolate,
                            change_record, NONE, kNonStrictMode));
 }
 
-static inline bool IsActiveObserver(JSFunction* observer) {
-  if (!active_observers_)
+static inline bool IsActiveObserver(Isolate* isolate, JSFunction* observer) {
+  if (!isolate->active_observers())
     return false;
-  for (int i = 0; i < active_observers_->length(); ++i) {
-    if (*active_observers_->at(i) == observer)
+  for (int i = 0; i < isolate->active_observers()->length(); ++i) {
+    if (*isolate->active_observers()->at(i) == observer)
       return true;
   }
   return false;
@@ -259,27 +257,27 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
         CreateChangeRecord(
             isolate, object_handle, name_handle, type, old_value_handle));
 
-    if (!active_observers_)
-      active_observers_ = new ObserverList;
+    if (!isolate->active_observers())
+      isolate->set_active_observers(new ObserverList);
 
-    if (!IsActiveObserver(*observer)) {
+    if (!IsActiveObserver(isolate, *observer)) {
       Handle<Object> handle = isolate->global_handles()->Create(*observer);
-      active_observers_->Add(Handle<JSFunction>::cast(handle));
+      isolate->active_observers()->Add(Handle<JSFunction>::cast(handle));
     }
   }
 }
 
 void FireObjectObservations() {
-  if (!active_observers_)
+  Isolate* isolate = Isolate::Current();
+  if (!isolate->active_observers())
     return;
 
-  Isolate* isolate = Isolate::Current();
   Factory* factory = isolate->factory();
   HandleScope scope(isolate);
 
   // FIXME: Should loop until active observers is non-empty
-  ObserverList* active_observers = active_observers_;
-  active_observers_ = NULL;
+  ObserverList* active_observers = isolate->active_observers();
+  isolate->set_active_observers(NULL);
 
   Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeRecordsStr,

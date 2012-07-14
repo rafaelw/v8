@@ -315,6 +315,7 @@ class ThreadLocalTop BASE_EMBEDDED {
   ISOLATE_INIT_DEBUG_ARRAY_LIST(V)
 
 typedef List<HeapObject*, PreallocatedStorageAllocationPolicy> DebugObjectCache;
+typedef List<Handle<JSFunction> > ObserverList;
 
 #define ISOLATE_INIT_LIST(V)                                                   \
   /* SerializerDeserializer state. */                                          \
@@ -353,6 +354,7 @@ typedef List<HeapObject*, PreallocatedStorageAllocationPolicy> DebugObjectCache;
   V(uint64_t, enabled_cpu_features, 0)                                         \
   V(CpuProfiler*, cpu_profiler, NULL)                                          \
   V(HeapProfiler*, heap_profiler, NULL)                                        \
+  V(ObserverList*, active_observers, NULL)                                        \
   ISOLATE_DEBUGGER_INIT_LIST(V)
 
 class Isolate {
