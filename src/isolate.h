@@ -360,6 +360,7 @@ typedef List<ObserverWithPriority> ObserverList;
   V(CpuProfiler*, cpu_profiler, NULL)                                          \
   V(HeapProfiler*, heap_profiler, NULL)                                        \
   V(ObserverList*, active_observers, NULL)                                        \
+  V(bool, delivering_observations, false)                                      \
   ISOLATE_DEBUGGER_INIT_LIST(V)
 
 class Isolate {

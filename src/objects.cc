@@ -304,36 +304,43 @@ void FireObjectObservations() {
   if (!isolate->active_observers())
     return;
 
+  if (isolate->delivering_observations())
+    return;
+  isolate->set_delivering_observations(true);
+
   Factory* factory = isolate->factory();
   HandleScope scope(isolate);
 
-  // FIXME: Should loop until active observers is non-empty
-  ObserverList* active_observers = isolate->active_observers();
-  isolate->set_active_observers(NULL);
+  while (ObserverList* active_observers = isolate->active_observers()) {
+    isolate->set_active_observers(NULL);
 
-  Vector<ObserverWithPriority> observers_sorted = active_observers->ToVector();
-  observers_sorted.Sort(SortByPriority);
+    Vector<ObserverWithPriority> observers_sorted =
+        active_observers->ToVector();
+    observers_sorted.Sort(SortByPriority);
 
-  Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeRecordsStr,
-                         sizeof(kHiddenChangeRecordsStr) - 1));
+    Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
+        Vector<const char>(kHiddenChangeRecordsStr,
+                           sizeof(kHiddenChangeRecordsStr) - 1));
 
-  for (int i = 0; i < observers_sorted.length(); ++i) {
-    Handle<JSFunction> observerFn = observers_sorted[i].observer;
-    Handle<Object> records(observerFn->GetHiddenProperty(*recordsKey));
-    ASSERT(!records->IsUndefined());
-    observerFn->DeleteHiddenProperty(*recordsKey);
+    for (int i = 0; i < observers_sorted.length(); ++i) {
+      Handle<JSFunction> observerFn = observers_sorted[i].observer;
+      Handle<Object> records(observerFn->GetHiddenProperty(*recordsKey));
+      ASSERT(!records->IsUndefined());
+      observerFn->DeleteHiddenProperty(*recordsKey);
 
-    Handle<Object> this_handle(isolate->heap()->undefined_value());
-    Handle<Object> args[] = { records };
-    bool has_pending_exception = false;
-    Execution::Call(
-        observerFn, this_handle, 1, args, &has_pending_exception, true);
-    isolate->global_handles()->Destroy(
-        Handle<Object>::cast(observerFn).location());
+      Handle<Object> this_handle(isolate->heap()->undefined_value());
+      Handle<Object> args[] = { records };
+      bool has_pending_exception = false;
+      Execution::Call(
+          observerFn, this_handle, 1, args, &has_pending_exception, true);
+      isolate->global_handles()->Destroy(
+          Handle<Object>::cast(observerFn).location());
+    }
+
+    delete active_observers;
   }
 
-  delete active_observers;
+  isolate->set_delivering_observations(false);
 }
 
 static inline void EnqueueLengthChange(JSArray* obj) {
