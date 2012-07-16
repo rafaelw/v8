@@ -315,7 +315,12 @@ class ThreadLocalTop BASE_EMBEDDED {
   ISOLATE_INIT_DEBUG_ARRAY_LIST(V)
 
 typedef List<HeapObject*, PreallocatedStorageAllocationPolicy> DebugObjectCache;
-typedef List<Handle<JSFunction> > ObserverList;
+
+struct ObserverWithPriority {
+  Handle<JSFunction> observer;
+  int priority;
+};
+typedef List<ObserverWithPriority> ObserverList;
 
 #define ISOLATE_INIT_LIST(V)                                                   \
   /* SerializerDeserializer state. */                                          \
@@ -1052,6 +1057,10 @@ class Isolate {
     date_cache_ = date_cache;
   }
 
+  int observer_priority() {
+    return observer_priority_++;
+  }
+
  private:
   Isolate();
 
@@ -1227,6 +1236,7 @@ class Isolate {
   RegExpStack* regexp_stack_;
   DateCache* date_cache_;
   unibrow::Mapping<unibrow::Ecma262Canonicalize> interp_canonicalize_mapping_;
+  int observer_priority_;
 
   // The garbage collector should be a little more aggressive when it knows
   // that a context was recently exited.

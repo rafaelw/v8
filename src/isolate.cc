@@ -1486,6 +1486,7 @@ Isolate::Isolate()
       string_tracker_(NULL),
       regexp_stack_(NULL),
       date_cache_(NULL),
+      observer_priority_(0),
       context_exit_happened_(false) {
   TRACE_ISOLATE(constructor);
 

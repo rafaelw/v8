@@ -60,6 +60,7 @@ namespace internal {
 // Object observation
 const char kHiddenChangeObserversStr[] = "___changeObservers";
 const char kHiddenChangeRecordsStr[] = "___changeRecords";
+const char kHiddenObserverPriorityStr[] = "___changeObserverPriority";
 enum ObjectMutationType {
   VALUE_MUTATION,
   DESCRIPTOR_CHANGE
@@ -88,10 +89,31 @@ bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
   return false;
 }
 
+static void AddObserverPriorityIfNeeded(Isolate* isolate, Handle<JSObject> observer) {
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenObserverPriorityStr,
+                         sizeof(kHiddenObserverPriorityStr) - 1));
+  if (!observer->GetHiddenProperty(*key)->IsUndefined())
+    return;
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSObject::SetHiddenProperty(
+          observer, key,
+          Handle<Object>(Smi::FromInt(isolate->observer_priority()))));
+}
+
+static inline int GetObserverPriority(Isolate* isolate, JSObject* observer) {
+  Handle<String> key = isolate->factory()->NewStringFromAscii(
+      Vector<const char>(kHiddenObserverPriorityStr,
+                         sizeof(kHiddenObserverPriorityStr) - 1));
+  return Smi::cast(observer->GetHiddenProperty(*key))->value();
+}
+
 void ObjectObservation::Observe(Isolate* isolate,
                                 Handle<JSObject> object,
                                 Handle<JSObject> observer) {
   HandleScope scope(isolate);
+  AddObserverPriorityIfNeeded(isolate, observer);
   Handle<String> key = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeObserversStr,
                          sizeof(kHiddenChangeObserversStr) - 1));
@@ -226,7 +248,7 @@ static inline bool IsActiveObserver(Isolate* isolate, JSFunction* observer) {
   if (!isolate->active_observers())
     return false;
   for (int i = 0; i < isolate->active_observers()->length(); ++i) {
-    if (*isolate->active_observers()->at(i) == observer)
+    if (*isolate->active_observers()->at(i).observer == observer)
       return true;
   }
   return false;
@@ -262,9 +284,19 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
 
     if (!IsActiveObserver(isolate, *observer)) {
       Handle<Object> handle = isolate->global_handles()->Create(*observer);
-      isolate->active_observers()->Add(Handle<JSFunction>::cast(handle));
+      ObserverWithPriority owp = {
+        Handle<JSFunction>::cast(handle),
+        GetObserverPriority(isolate, *observer)
+      };
+      isolate->active_observers()->Add(owp);
     }
   }
+}
+
+static int SortByPriority(const ObserverWithPriority* a,
+                          const ObserverWithPriority* b) {
+  if (a->priority == b->priority) return 0;
+  return a->priority < b->priority ? -1 : 1;
 }
 
 void FireObjectObservations() {
@@ -279,12 +311,15 @@ void FireObjectObservations() {
   ObserverList* active_observers = isolate->active_observers();
   isolate->set_active_observers(NULL);
 
+  Vector<ObserverWithPriority> observers_sorted = active_observers->ToVector();
+  observers_sorted.Sort(SortByPriority);
+
   Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
       Vector<const char>(kHiddenChangeRecordsStr,
                          sizeof(kHiddenChangeRecordsStr) - 1));
 
-  for (int i = 0; i < active_observers->length(); ++i) {
-    Handle<JSFunction> observerFn = active_observers->at(i);
+  for (int i = 0; i < observers_sorted.length(); ++i) {
+    Handle<JSFunction> observerFn = observers_sorted[i].observer;
     Handle<Object> records(observerFn->GetHiddenProperty(*recordsKey));
     ASSERT(!records->IsUndefined());
     observerFn->DeleteHiddenProperty(*recordsKey);
