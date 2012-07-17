@@ -8704,7 +8704,10 @@ class ObjectObservation {
                       Handle<JSObject> object, Handle<JSObject> observer);
   static void Unobserve(Isolate* isolate, JSObject* object, JSObject* observer);
   static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
-                                       String* name, int type,
+                                       String* name, const char* type,
+                                       Object* old_value);
+  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
+                                       String* name, String* type,
                                        Object* old_value);
 };
 // Abstract base class for visiting, and optionally modifying, the

@@ -61,10 +61,6 @@ namespace internal {
 const char kHiddenChangeObserversStr[] = "___changeObservers";
 const char kHiddenChangeRecordsStr[] = "___changeRecords";
 const char kHiddenObserverPriorityStr[] = "___changeObserverPriority";
-enum ObjectMutationType {
-  VALUE_MUTATION,
-  DESCRIPTOR_CHANGE
-};
 
 
 bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
@@ -166,7 +162,8 @@ void ObjectObservation::Unobserve(Isolate* isolate,
 
 static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
                                            Handle<Object> object,
-                                           Handle<Object> name, int type,
+                                           Handle<Object> name,
+                                           Handle<String> type,
                                            Handle<Object> old_value) {
   HandleScope scope(isolate);
 
@@ -181,13 +178,6 @@ static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
   Handle<String> old_value_sym =
       factory->NewStringFromAscii(CStrVector("oldValue"));
 
-  Handle<Object> value_sym = factory->NewStringFromAscii(CStrVector("value"));
-  Handle<Object> descriptor_sym =
-      factory->NewStringFromAscii(CStrVector("descriptor"));
-  Handle<Object> type_value(type == VALUE_MUTATION
-                            ? value_sym.location()
-                            : descriptor_sym.location());
-
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
       JSReceiver::SetProperty(recordObject, object_sym, object, NONE,
@@ -198,7 +188,7 @@ static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
                               kNonStrictMode));
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
-      JSReceiver::SetProperty(recordObject, type_sym, type_value, NONE,
+      JSReceiver::SetProperty(recordObject, type_sym, type, NONE,
                               kNonStrictMode));
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
@@ -250,7 +240,19 @@ static inline bool IsActiveObserver(Isolate* isolate, JSFunction* observer) {
 void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
                                                  JSObject* obj,
                                                  String* name,
-                                                 int type,
+                                                 const char* type,
+                                                 Object* old_value) {
+  HandleScope scope(isolate);
+  Handle<String> type_str =
+      isolate->factory()->NewStringFromAscii(CStrVector(type));
+  EnqueueObservationChange(isolate, obj, name, *type_str, old_value);
+}
+
+// FIXME: Should take handles instead of raw pointers.
+void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
+                                                 JSObject* obj,
+                                                 String* name,
+                                                 String* type,
                                                  Object* old_value) {
   HandleScope scope(isolate);
   Handle<JSObject> object_handle(obj);
@@ -269,7 +271,8 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
     AddRecordToObserver(
         isolate, observer,
         CreateChangeRecord(
-            isolate, object_handle, name_handle, type, old_value_handle));
+            isolate, object_handle, name_handle, Handle<String>(type),
+            old_value_handle));
 
     if (!isolate->active_observers())
       isolate->set_active_observers(new ObserverList);
@@ -339,7 +342,7 @@ static inline void EnqueueLengthChange(JSArray* obj) {
   Isolate* isolate = heap->isolate();
   if (ObjectObservation::IsObserved(isolate, obj)) {
     ObjectObservation::EnqueueObservationChange(
-        isolate, obj, heap->length_symbol(), VALUE_MUTATION, obj->length());
+        isolate, obj, heap->length_symbol(), "updated", obj->length());
   }
 }
 
@@ -2261,7 +2264,8 @@ MaybeObject* JSReceiver::SetProperty(String* name,
 
     if (!result.IsFound() || result.type() != CALLBACKS) {
       ObjectObservation::EnqueueObservationChange(
-          isolate, JSObject::cast(this), name, VALUE_MUTATION, old_value);
+          isolate, JSObject::cast(this), name,
+          result.IsFound() ? "updated" : "new", old_value);
     }
   }
 
@@ -4147,7 +4151,8 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
       MaybeObject* maybe_object = GetElement(index);
       Object* oldValue = NULL;
       maybe_object->ToObject(&oldValue);
-      ObjectObservation::EnqueueObservationChange(isolate, this, name, VALUE_MUTATION, oldValue);
+      ObjectObservation::EnqueueObservationChange(
+          isolate, this, name, "deleted", oldValue);
     }
   }
 
@@ -4230,7 +4235,8 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
                                result.type() == CONSTANT_FUNCTION)) {
         oldValue = result.GetLazyValue();
       }
-      ObjectObservation::EnqueueObservationChange(isolate, this, name, VALUE_MUTATION, oldValue);
+      ObjectObservation::EnqueueObservationChange(
+          isolate, this, name, result.IsFound() ? "updated" : "new", oldValue);
     }
 
     // Check for interceptor.
@@ -10145,15 +10151,13 @@ MaybeObject* JSObject::SetElement(uint32_t index,
 
   Isolate* isolate = GetIsolate();
   if (ObjectObservation::IsObserved(isolate, this)) {
-    String* name;
-    MaybeObject* maybe_name = GetHeap()->Uint32ToString(index);
-    if (maybe_name->To<String>(&name)) {
-      // TODO(adamk): Do something safer instead of GetElement().
-      MaybeObject* maybe_object = GetElement(index);
-      Object* oldValue = NULL;
-      maybe_object->ToObject(&oldValue);
-      ObjectObservation::EnqueueObservationChange(isolate, this, name, VALUE_MUTATION, oldValue);
-    }
+    Handle<String> name = isolate->factory()->Uint32ToString(index);
+    Handle<Object> oldValue;
+    if (HasElement(index))
+      oldValue = Object::GetElement(Handle<Object>(this), index);
+    ObjectObservation::EnqueueObservationChange(
+        isolate, this, *name, oldValue.is_null() ? "new" : "updated",
+        oldValue.is_null() ? NULL : *oldValue);
   }
 
   // Check for lookup interceptor

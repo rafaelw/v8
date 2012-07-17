@@ -10115,11 +10115,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectUnobserve) {
   return isolate->heap()->undefined_value();
 }
 
-enum ObjectMutationType {
-  VALUE_MUTATION,
-  DESCRIPTOR_CHANGE
-};
-
 RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectNotifyObservers) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 4);
@@ -10128,7 +10123,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectNotifyObservers) {
 
   CONVERT_ARG_CHECKED(JSObject, recordArg, 0);
   CONVERT_ARG_CHECKED(JSObject, obj, 1);
-  CONVERT_NUMBER_CHECKED(int32_t, mutationType, Int32, args[2]);
+  CONVERT_ARG_CHECKED(String, mutationType, 2);
   CONVERT_ARG_CHECKED(String, name, 3);
 
   if (!ObjectObservation::IsObserved(isolate, obj))

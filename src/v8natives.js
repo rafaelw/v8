@@ -351,7 +351,7 @@ function ObjectNotifyObservers(uncheckedChangeRecord) {
   
   %ObjectNotifyObservers(changeRecord,
                          changeRecord.object,
-                         changeRecord.type === 'value' ? 0 : 1,
+                         changeRecord.type,
                          changeRecord.name);
   return true;
 }
