@@ -75,8 +75,7 @@ bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
     return false;
 
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr,
-                         sizeof(kHiddenChangeObserversStr) - 1));
+      CStrVector(kHiddenChangeObserversStr));
   Object* observers = jsObject->GetHiddenProperty(*key);
   if (observers->IsUndefined())
     return false;
@@ -91,8 +90,7 @@ bool ObjectObservation::IsObserved(Isolate* isolate, JSReceiver* object) {
 
 static void AddObserverPriorityIfNeeded(Isolate* isolate, Handle<JSObject> observer) {
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenObserverPriorityStr,
-                         sizeof(kHiddenObserverPriorityStr) - 1));
+      CStrVector(kHiddenObserverPriorityStr));
   if (!observer->GetHiddenProperty(*key)->IsUndefined())
     return;
   CHECK_NOT_EMPTY_HANDLE(
@@ -104,8 +102,7 @@ static void AddObserverPriorityIfNeeded(Isolate* isolate, Handle<JSObject> obser
 
 static inline int GetObserverPriority(Isolate* isolate, JSObject* observer) {
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenObserverPriorityStr,
-                         sizeof(kHiddenObserverPriorityStr) - 1));
+      CStrVector(kHiddenObserverPriorityStr));
   return Smi::cast(observer->GetHiddenProperty(*key))->value();
 }
 
@@ -115,8 +112,7 @@ void ObjectObservation::Observe(Isolate* isolate,
   HandleScope scope(isolate);
   AddObserverPriorityIfNeeded(isolate, observer);
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr,
-                         sizeof(kHiddenChangeObserversStr) - 1));
+      CStrVector(kHiddenChangeObserversStr));
   Object* observers = object->GetHiddenProperty(*key);
   if (observers->IsUndefined()) {
     Handle<FixedArray> observers_array = isolate->factory()->NewFixedArray(1);
@@ -154,8 +150,7 @@ void ObjectObservation::Unobserve(Isolate* isolate,
                                   JSObject* observer) {
   HandleScope scope(isolate);
   Handle<String> key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr,
-                         sizeof(kHiddenChangeObserversStr) - 1));
+      CStrVector(kHiddenChangeObserversStr));
   Object* observers = object->GetHiddenProperty(*key);
   if (observers->IsUndefined())
     return;
@@ -180,8 +175,7 @@ static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
   Handle<JSObject> recordObject =
       factory->NewJSObject(isolate->object_function(), TENURED);
 
-  Handle<String> name_sym = factory->LookupAsciiSymbol(
-      Vector<const char>("name", sizeof("name") - 1));
+  Handle<String> name_sym = factory->LookupAsciiSymbol(CStrVector("name"));
   Handle<String> type_sym = factory->NewStringFromAscii(CStrVector("type"));
   Handle<String> object_sym = factory->NewStringFromAscii(CStrVector("object"));
   Handle<String> old_value_sym =
@@ -222,8 +216,7 @@ static void AddRecordToObserver(Isolate* isolate,
                                 Handle<JSFunction> observer,
                                 Handle<JSObject> change_record) {
   Handle<String> records_key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeRecordsStr,
-                         sizeof(kHiddenChangeRecordsStr) - 1));
+      CStrVector(kHiddenChangeRecordsStr));
   Object* records = observer->GetHiddenProperty(*records_key);
   if (!records || records->IsUndefined()) {
     Handle<JSArray> records_array = isolate->factory()->NewJSArray(1);
@@ -264,8 +257,7 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
   Handle<String> name_handle(name);
   Handle<Object> old_value_handle(old_value);
   Handle<String> observers_key = isolate->factory()->NewStringFromAscii(
-      Vector<const char>(kHiddenChangeObserversStr,
-                         sizeof(kHiddenChangeObserversStr) - 1));
+      CStrVector(kHiddenChangeObserversStr));
   Object* observers = obj->GetHiddenProperty(*observers_key);
   if (observers->IsUndefined())
     return;
@@ -319,8 +311,7 @@ void FireObjectObservations() {
     observers_sorted.Sort(SortByPriority);
 
     Handle<String> recordsKey = isolate->factory()->NewStringFromAscii(
-        Vector<const char>(kHiddenChangeRecordsStr,
-                           sizeof(kHiddenChangeRecordsStr) - 1));
+        CStrVector(kHiddenChangeRecordsStr));
 
     for (int i = 0; i < observers_sorted.length(); ++i) {
       Handle<JSFunction> observerFn = observers_sorted[i].observer;
