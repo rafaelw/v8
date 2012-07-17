@@ -190,14 +190,12 @@ static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
       isolate,
       JSReceiver::SetProperty(recordObject, type_sym, type, NONE,
                               kNonStrictMode));
-  CHECK_NOT_EMPTY_HANDLE(
-      isolate,
-      JSReceiver::SetProperty(
-          recordObject, old_value_sym,
-          !old_value.is_null()
-          ? old_value
-          : Handle<Object>(isolate->heap()->undefined_value()),
-          NONE, kNonStrictMode));
+  if (!old_value.is_null()) {
+    CHECK_NOT_EMPTY_HANDLE(
+        isolate,
+        JSReceiver::SetProperty(
+            recordObject, old_value_sym, old_value, NONE, kNonStrictMode));
+  }
 
   return scope.CloseAndEscape(recordObject);
 }
