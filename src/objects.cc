@@ -255,7 +255,7 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
   HandleScope scope(isolate);
   Handle<JSObject> object_handle(obj);
   Handle<String> name_handle(name);
-  Handle<Object> old_value_handle(old_value);
+  Handle<Object> old_value_handle = old_value ? Handle<Object>(old_value) : Handle<Object>();
   Handle<String> observers_key = isolate->factory()->NewStringFromAscii(
       CStrVector(kHiddenChangeObserversStr));
   Object* observers = obj->GetHiddenProperty(*observers_key);
@@ -4883,6 +4883,19 @@ MaybeObject* JSObject::DefineAccessor(String* name,
   name->TryFlatten();
 
   if (!CanSetCallback(name)) return isolate->heap()->undefined_value();
+
+  {
+    LookupResult result(isolate);
+    LocalLookup(name, &result);
+    Object* old_value = NULL;
+    if (result.IsFound() && (result.type() == NORMAL ||
+                             result.type() == FIELD ||
+                             result.type() == CONSTANT_FUNCTION)) {
+      old_value = result.GetLazyValue();
+    }
+    ObjectObservation::EnqueueObservationChange(
+        isolate, this, name, "reconfigured", old_value);
+  }
 
   uint32_t index = 0;
   return name->AsArrayIndex(&index) ?
