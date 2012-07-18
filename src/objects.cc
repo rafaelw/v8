@@ -4234,7 +4234,7 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
         oldValue = result.GetLazyValue();
       }
       ObjectObservation::EnqueueObservationChange(
-          isolate, this, name, result.IsFound() ? "updated" : "new", oldValue);
+          isolate, this, name, "deleted", oldValue);
     }
 
     // Check for interceptor.
