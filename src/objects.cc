@@ -2260,7 +2260,8 @@ MaybeObject* JSReceiver::SetProperty(String* name,
       old_value = result.GetLazyValue();
     }
 
-    if (!result.IsFound() || result.type() != CALLBACKS) {
+    if ((!result.IsFound() || result.type() != CALLBACKS) &&
+        (!old_value || !value->SameValue(old_value))) {
       ObjectObservation::EnqueueObservationChange(
           isolate, JSObject::cast(this), name,
           result.IsFound() ? "updated" : "new", old_value);
@@ -10163,12 +10164,14 @@ MaybeObject* JSObject::SetElement(uint32_t index,
   Isolate* isolate = GetIsolate();
   if (ObjectObservation::IsObserved(isolate, this)) {
     Handle<String> name = isolate->factory()->Uint32ToString(index);
-    Handle<Object> oldValue;
+    Handle<Object> old_value;
     if (HasElement(index))
-      oldValue = Object::GetElement(Handle<Object>(this), index);
-    ObjectObservation::EnqueueObservationChange(
-        isolate, this, *name, oldValue.is_null() ? "new" : "updated",
-        oldValue.is_null() ? NULL : *oldValue);
+      old_value = Object::GetElement(Handle<Object>(this), index);
+    if (old_value.is_null() || !old_value->SameValue(value)) {
+      ObjectObservation::EnqueueObservationChange(
+          isolate, this, *name, old_value.is_null() ? "new" : "updated",
+          old_value.is_null() ? NULL : *old_value);
+    }
   }
 
   // Check for lookup interceptor
