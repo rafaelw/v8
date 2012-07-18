@@ -4481,6 +4481,19 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DefineOrRedefineDataProperty) {
   LookupResult result(isolate);
   js_object->LocalLookupRealNamedProperty(*name, &result);
 
+  {
+    // FIXME: This code lies about what happens to wrapper objects.
+    Object* old_value = NULL;
+    if (result.IsFound() && (result.type() == NORMAL ||
+                             result.type() == FIELD ||
+                             result.type() == CONSTANT_FUNCTION)) {
+      old_value = result.GetLazyValue();
+    }
+    ObjectObservation::EnqueueObservationChange(
+       isolate, *js_object, *name, result.IsFound() ? "reconfigured" : "new",
+       old_value);
+  }
+
   // Special case for callback properties.
   if (result.IsFound() && result.type() == CALLBACKS) {
     Object* callback = result.GetCallbackObject();
