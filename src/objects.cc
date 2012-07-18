@@ -128,7 +128,7 @@ void ObjectObservation::Observe(Isolate* isolate,
       hole_index = i;
   }
 
-  if (hole_index) {
+  if (hole_index >= 0) {
     observer_array->set(hole_index, *observer);
     return;
   }
