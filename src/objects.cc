@@ -292,6 +292,40 @@ static int SortByPriority(const ObserverWithPriority* a,
   return a->priority < b->priority ? -1 : 1;
 }
 
+static void DeliverChangeRecordsHelper(Isolate* isolate,
+                                       Handle<JSFunction> observer) {
+  HandleScope scope(isolate);
+  Handle<String> records_key = isolate->factory()->NewStringFromAscii(
+      CStrVector(kHiddenChangeRecordsStr));
+  Object* records = observer->GetHiddenProperty(*records_key);
+  ASSERT(!records->IsUndefined());
+  ASSERT(records->IsJSArray());
+  ASSERT(JSArray::cast(records)->length());
+  Handle<Object> args[] = { Handle<Object>(records) };
+  observer->DeleteHiddenProperty(*records_key);
+
+  Handle<Object> this_handle(isolate->heap()->undefined_value());
+  bool has_pending_exception = false;
+  Execution::Call(
+      observer, this_handle, 1, args, &has_pending_exception, true);
+}
+
+void ObjectObservation::DeliverChangeRecords(Isolate* isolate,
+                                             Handle<JSFunction> observer) {
+  ObserverList* active_observers = isolate->active_observers();
+  if (!active_observers)
+    return;
+  for (int i = 0; i < active_observers->length(); ++i) {
+    Handle<Object> global_handle = active_observers->at(i).observer;
+    if (global_handle.is_identical_to(observer)) {
+      active_observers->Remove(i);
+      isolate->global_handles()->Destroy(global_handle.location());
+      DeliverChangeRecordsHelper(isolate, observer);
+      return;
+    }
+  }
+}
+
 void FireObjectObservations() {
   Isolate* isolate = Isolate::Current();
   if (!isolate->active_observers())
@@ -316,15 +350,7 @@ void FireObjectObservations() {
 
     for (int i = 0; i < observers_sorted.length(); ++i) {
       Handle<JSFunction> observerFn = observers_sorted[i].observer;
-      Handle<Object> records(observerFn->GetHiddenProperty(*recordsKey));
-      ASSERT(!records->IsUndefined());
-      observerFn->DeleteHiddenProperty(*recordsKey);
-
-      Handle<Object> this_handle(isolate->heap()->undefined_value());
-      Handle<Object> args[] = { records };
-      bool has_pending_exception = false;
-      Execution::Call(
-          observerFn, this_handle, 1, args, &has_pending_exception, true);
+      DeliverChangeRecordsHelper(isolate, observerFn);
       isolate->global_handles()->Destroy(
           Handle<Object>::cast(observerFn).location());
     }

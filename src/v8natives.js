@@ -356,6 +356,15 @@ function ObjectNotifyObservers(uncheckedChangeRecord) {
   return true;
 }
 
+function ObjectDeliverChangeRecords(callback) {
+  if (!IS_SPEC_FUNCTION(callback)) {
+    throw new $TypeError(
+        'Object.deliverChangeRecords: Expecting function');
+  }
+
+  return %ObjectDeliverChangeRecords(callback);
+}
+
 // Extensions for providing property getters and setters.
 function ObjectDefineGetter(name, fun) {
   var receiver = this;
@@ -1381,6 +1390,7 @@ function SetUpObject() {
     "create", ObjectCreate,
     "defineProperty", ObjectDefineProperty,
     "defineProperties", ObjectDefineProperties,
+    "deliverChangeRecords", ObjectDeliverChangeRecords,
     "freeze", ObjectFreeze,
     "getPrototypeOf", ObjectGetPrototypeOf,
     "getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor,

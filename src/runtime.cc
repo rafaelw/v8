@@ -10154,6 +10154,16 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectNotifyObservers) {
   return heap->undefined_value();
 }
 
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectDeliverChangeRecords) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 1);
+  CONVERT_ARG_CHECKED(JSFunction, raw_observer, 0);
+
+  Handle<JSFunction> observer(raw_observer);
+  ObjectObservation::DeliverChangeRecords(isolate, observer);
+  return isolate->heap()->undefined_value();
+}
+
 // Moves all own elements of an object, that are below a limit, to positions
 // starting at zero. All undefined values are placed after non-undefined values,
 // and are followed by non-existing element. Does not change the length

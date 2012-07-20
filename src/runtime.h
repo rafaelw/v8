@@ -268,6 +268,7 @@ namespace internal {
   F(IgnoreAttributesAndSetProperty, -1 /* 3 or 4 */, 1) \
   \
   /* Object Observation */ \
+  F(ObjectDeliverChangeRecords, 1, 1) \
   F(ObjectObserve, 2, 1) \
   F(ObjectUnobserve, 2, 1) \
   F(ObjectNotifyObservers, 4, 1) \
