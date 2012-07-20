@@ -1371,9 +1371,6 @@ function SetUpObject() {
     "hasOwnProperty", ObjectHasOwnProperty,
     "isPrototypeOf", ObjectIsPrototypeOf,
     "propertyIsEnumerable", ObjectPropertyIsEnumerable,
-    "observe", ObjectObserve,
-    "unobserve", ObjectUnobserve,
-    "notifyObservers", ObjectNotifyObservers,
     "__defineGetter__", ObjectDefineGetter,
     "__lookupGetter__", ObjectLookupGetter,
     "__defineSetter__", ObjectDefineSetter,
@@ -1392,8 +1389,11 @@ function SetUpObject() {
     "isExtensible", ObjectIsExtensible,
     "isFrozen", ObjectIsFrozen,
     "isSealed", ObjectIsSealed,
+    "notifyObservers", ObjectNotifyObservers,
+    "observe", ObjectObserve,
     "preventExtensions", ObjectPreventExtension,
-    "seal", ObjectSeal
+    "seal", ObjectSeal,
+    "unobserve", ObjectUnobserve
   ));
 }
 
