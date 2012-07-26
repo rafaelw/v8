@@ -305,9 +305,16 @@ static void DeliverChangeRecordsHelper(Isolate* isolate,
   observer->DeleteHiddenProperty(*records_key);
 
   Handle<Object> this_handle(isolate->heap()->undefined_value());
+  v8::TryCatch catcher;
+  catcher.SetVerbose(false);
+  catcher.SetCaptureMessage(false);
   bool has_pending_exception = false;
+  // FIXME: Should be able to use TryCall here, but it doesn't handle
+  // conversion of |this_handle| to global object properly.
   Execution::Call(
       observer, this_handle, 1, args, &has_pending_exception, true);
+  if (has_pending_exception)
+    isolate->OptionalRescheduleException(true);
 }
 
 void ObjectObservation::DeliverChangeRecords(Isolate* isolate,
