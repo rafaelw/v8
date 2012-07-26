@@ -581,11 +581,11 @@ function ArrayShift() {
 
   var first = this[0];
 
-  if (IS_ARRAY(this)) {
-    SmartMove(this, 0, 1, len, 0);
-  } else {
+//  if (IS_ARRAY(this)) {
+//    SmartMove(this, 0, 1, len, 0);
+//  } else {
     SimpleMove(this, 0, 1, len, 0);
-  }
+//  }
 
   this.length = len - 1;
 
@@ -602,11 +602,11 @@ function ArrayUnshift(arg1) {  // length == 1
   var len = TO_UINT32(this.length);
   var num_arguments = %_ArgumentsLength();
 
-  if (IS_ARRAY(this)) {
-    SmartMove(this, 0, 0, len, num_arguments);
-  } else {
+//  if (IS_ARRAY(this)) {
+//    SmartMove(this, 0, 0, len, num_arguments);
+//  } else {
     SimpleMove(this, 0, 0, len, num_arguments);
-  }
+//  }
 
   for (var i = 0; i < num_arguments; i++) {
     this[i] = %_Arguments(i);
@@ -715,13 +715,13 @@ function ArraySplice(start, delete_count) {
     }
   }
 
-  if (use_simple_splice) {
+//  if (use_simple_splice) {
     SimpleSlice(this, start_i, del_count, len, deleted_elements);
     SimpleMove(this, start_i, del_count, len, num_additional_args);
-  } else {
-    SmartSlice(this, start_i, del_count, len, deleted_elements);
-    SmartMove(this, start_i, del_count, len, num_additional_args);
-  }
+//  } else {
+//    SmartSlice(this, start_i, del_count, len, deleted_elements);
+//    SmartMove(this, start_i, del_count, len, num_additional_args);
+//  }
 
   // Insert the arguments into the resulting array in
   // place of the deleted elements.
