@@ -1230,6 +1230,23 @@ bool Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
     delegate->shared()->DontAdaptArguments();
   }
 
+  {
+    // Set up the [[NotifierPrototype]]
+    Handle<Code> code =
+        Handle<Code>(isolate->builtins()->builtin(
+            Builtins::kObjectNotifierNotify));
+    Handle<String> name = factory->LookupAsciiSymbol("notify");
+    Handle<JSFunction> notifier_fun =
+        factory->NewFunction(name, JS_OBJECT_TYPE,
+                             JSObject::kHeaderSize, code, false);
+    Handle<JSObject> notifier_prototype = factory->NewJSObject(
+        isolate->object_function(), TENURED);
+    JSReceiver::SetProperty(notifier_prototype, name, notifier_fun,
+                            DONT_ENUM, kNonStrictMode);
+    global_context()->set_notifier_prototype(*notifier_prototype);
+    notifier_fun->shared()->DontAdaptArguments();
+  }
+
   // Initialize the out of memory slot.
   global_context()->set_out_of_memory(heap->false_value());
 

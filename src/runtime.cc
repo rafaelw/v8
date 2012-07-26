@@ -10154,6 +10154,38 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectNotifyObservers) {
   return heap->undefined_value();
 }
 
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectGetNotifier) {
+  ASSERT(args.length() == 1);
+  CONVERT_ARG_CHECKED(JSObject, raw_object, 0);
+
+  HandleScope scope(isolate);
+  Heap* heap = isolate->heap();
+  Factory* factory = isolate->factory();
+
+  Handle<JSObject> object(raw_object);
+
+  Handle<String> notifier_key = factory->LookupAsciiSymbol("___notifier");
+  Handle<String> target_key = factory->LookupAsciiSymbol("___target");
+  {
+    Object* notifier = object->GetHiddenProperty(*notifier_key);
+    if (!notifier->IsUndefined())
+      return notifier;
+  }
+
+  Handle<JSObject> notifier = factory->NewJSObject(isolate->object_function());
+  { MaybeObject* maybe = notifier->SetPrototype(*isolate->notifier_prototype(),
+                                                false);
+    if (maybe->IsFailure()) return maybe;
+  }
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSObject::SetHiddenProperty(object, notifier_key, notifier));
+  CHECK_NOT_EMPTY_HANDLE(
+      isolate,
+      JSObject::SetHiddenProperty(notifier, target_key, object));
+  return *notifier;
+}
+
 RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectDeliverChangeRecords) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 1);

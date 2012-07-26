@@ -271,7 +271,7 @@ namespace internal {
   F(ObjectDeliverChangeRecords, 1, 1) \
   F(ObjectObserve, 2, 1) \
   F(ObjectUnobserve, 2, 1) \
-  F(ObjectNotifyObservers, 4, 1) \
+  F(ObjectGetNotifier, 1, 1) \
   \
   /* Arrays */ \
   F(RemoveArrayHoles, 2, 1) \

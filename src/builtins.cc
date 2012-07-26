@@ -185,6 +185,90 @@ BUILTIN(EmptyFunction) {
 }
 
 
+BUILTIN(ObjectNotifierNotify) {
+  Factory* factory = isolate->factory();
+
+  if (args.length() != 2)
+    return isolate->heap()->undefined_value();
+
+  // FIXME: Use better error messages for the type errors in here
+  if (!args[1]->IsJSObject()) {
+    return isolate->Throw(*factory->NewTypeError(
+        "illegal_invocation", HandleVector<Object>(NULL, 0)));
+  }
+
+  // FIXME: This can't fail right now because this isn't a strict-mode function.
+  // Maybe fix that?
+  Object* receiver = *args.receiver();
+  if (!receiver->IsJSObject()) {
+    return isolate->Throw(*factory->NewTypeError(
+        "illegal_invocation", HandleVector<Object>(NULL, 0)));
+  }
+
+  Heap* heap = isolate->heap();
+
+  HandleScope scope(isolate);
+
+  Handle<JSObject> notifier(JSObject::cast(receiver));
+  Handle<JSObject> record_arg(JSObject::cast(args[1]));
+
+  Handle<String> target_sym = factory->LookupAsciiSymbol("___target");
+  Object* raw_target = notifier->GetHiddenProperty(*target_sym);
+  // FIXME: The spec says not to throw here, but that seems weird
+  if (raw_target->IsUndefined())
+    return heap->undefined_value();
+  Handle<JSObject> target(JSObject::cast(raw_target));
+
+  Handle<String> type_sym = factory->LookupAsciiSymbol("type");
+  Handle<String> type;
+  {
+    LookupResult result(isolate);
+    record_arg->Lookup(*type_sym, &result);
+    if (result.IsFound()) {
+      Object* obj = result.GetLazyValue();
+      if (obj->IsString())
+        type = Handle<String>(String::cast(obj));
+    }
+  }
+
+  if (type.is_null()) {
+    return isolate->Throw(*factory->NewTypeError(
+        "illegal_invocation", HandleVector<Object>(NULL, 0)));
+  }
+
+  Handle<String> name_sym = factory->LookupAsciiSymbol("name");
+  Handle<String> old_value_sym = factory->LookupAsciiSymbol("oldValue");
+
+  Handle<String> name;
+  Handle<Object> old_value;
+  // FIXME: Rather than pulling out these three symbols, should just iterate
+  // over all enumerable properties (exception 'object') in the passed-in
+  // record.
+  {
+    LookupResult result(isolate);
+    record_arg->Lookup(*name_sym, &result);
+    if (result.IsFound()) {
+      Object* obj = result.GetLazyValue();
+      if (obj->IsString())
+        name = Handle<String>(String::cast(obj));
+    }
+  }
+
+  {
+    LookupResult result(isolate);
+    record_arg->Lookup(*old_value_sym, &result);
+    if (result.IsFound())
+      old_value = Handle<Object>(result.GetLazyValue());
+  }
+
+  // FIXME: Should be enumerating over the passed-in changeRecord
+  ObjectObservation::EnqueueObservationChange(
+      isolate, *target, *name, *type, old_value.is_null() ? NULL : *old_value);
+
+  return isolate->heap()->undefined_value();
+}
+
+
 static MaybeObject* ArrayCodeGenericCommon(Arguments* args,
                                            Isolate* isolate,
                                            JSFunction* constructor) {

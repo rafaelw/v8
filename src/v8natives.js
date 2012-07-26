@@ -307,53 +307,15 @@ function ObjectUnobserve(object, callback) {
   return %ObjectUnobserve(object, callback);
 }
 
-function toChangeRecord(inRecord) {
-  if (!IS_SPEC_OBJECT(inRecord)) {
-    throw new $TypeError('Invalid ChangeRecord');
+function ObjectGetNotifier(object) {
+  if (!IS_SPEC_OBJECT(object)) {
+    throw new $TypeError(
+        'Object.getNotifier: Expecting object');
   }
-
-  if (!IS_SPEC_OBJECT(inRecord.object)) {
-    throw new $TypeError('Invalid ChangeRecord');
+  if ($Object.isFrozen(object)) {
+    return null;
   }
-
-  if (typeof inRecord.type != "string" ||
-      (inRecord.type != "value" &&
-       inRecord.type != "descriptor")) {
-    throw new $TypeError('Invalid ChangeRecord');
-  }
-
-  if (typeof inRecord.name != "string") {
-    throw new $TypeError('Invalid ChangeRecord');
-  }
-
-  if (typeof inRecord.type != "string") {
-    throw new $TypeError('Invalid ChangeRecord');
-  }
-
-  if (!%HasLocalProperty(inRecord, "oldValue")) {
-    throw new $TypeError('Invalid ChangeRecord');
-  }
-
-  // TODO(rafaelw): Further validation of change record.
-
-  return {
-    object: inRecord.object,
-    type: inRecord.type,
-    name: inRecord.name,
-    oldValue: inRecord.oldValue
-  }
-}
-
-function ObjectNotifyObservers(uncheckedChangeRecord) {
-  changeRecord = toChangeRecord(uncheckedChangeRecord);
-  if (!changeRecord)
-    return false;
-  
-  %ObjectNotifyObservers(changeRecord,
-                         changeRecord.object,
-                         changeRecord.type,
-                         changeRecord.name);
-  return true;
+  return %ObjectGetNotifier(object);
 }
 
 function ObjectDeliverChangeRecords(callback) {
@@ -1395,11 +1357,11 @@ function SetUpObject() {
     "getPrototypeOf", ObjectGetPrototypeOf,
     "getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor,
     "getOwnPropertyNames", ObjectGetOwnPropertyNames,
+    "getNotifier", ObjectGetNotifier,
     "is", ObjectIs,
     "isExtensible", ObjectIsExtensible,
     "isFrozen", ObjectIsFrozen,
     "isSealed", ObjectIsSealed,
-    "notifyObservers", ObjectNotifyObservers,
     "observe", ObjectObserve,
     "preventExtensions", ObjectPreventExtension,
     "seal", ObjectSeal,
