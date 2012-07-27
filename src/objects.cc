@@ -368,8 +368,8 @@ void FireObjectObservations() {
   isolate->set_delivering_observations(false);
 }
 
-static inline void EnqueueLengthChange(JSArray* obj, uint32_t new_length) {
-  if (Smi::cast(obj->length())->value() == new_length)
+static void EnqueueLengthChange(JSArray* obj, uint32_t new_length) {
+  if (Smi::cast(obj->length())->value() == static_cast<int>(new_length))
     return;
   Heap* heap = obj->GetHeap();
   Isolate* isolate = heap->isolate();
@@ -9191,9 +9191,9 @@ MaybeObject* JSArray::SetElementsLength(Object* len) {
   ASSERT(AllowsSetElementsLength());
   // FIXME: Should check that SetLength succeeded before enqueueing length
   // change.
-  uint32_t len;
-  if (len->ToArrayIndex(&len))
-    EnqueueLengthChange(this, len);
+  uint32_t index;
+  if (len->ToArrayIndex(&index))
+    EnqueueLengthChange(this, index);
   return GetElementsAccessor()->SetLength(this, len);
 }
 
