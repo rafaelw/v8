@@ -2297,7 +2297,7 @@ MaybeObject* JSReceiver::SetProperty(String* name,
         (!old_value || !value->SameValue(old_value))) {
       ObjectObservation::EnqueueObservationChange(
           isolate, JSObject::cast(this), name,
-          result.IsFound() ? "updated" : "new", old_value);
+          old_value ? "updated" : "new", old_value);
     }
   }
 
