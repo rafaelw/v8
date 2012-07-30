@@ -8709,6 +8709,7 @@ class ObjectObservation {
   static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
                                        String* name, String* type,
                                        Object* old_value);
+  static void EnqueueArrayLengthChange(JSArray* obj, uint32_t new_length);
   static void DeliverChangeRecords(Isolate* isolate, Handle<JSFunction> observer);
 };
 // Abstract base class for visiting, and optionally modifying, the

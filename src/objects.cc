@@ -367,15 +367,18 @@ void FireObjectObservations() {
   isolate->set_delivering_observations(false);
 }
 
-static void EnqueueLengthChange(JSArray* obj, uint32_t new_length) {
-  if (Smi::cast(obj->length())->value() == static_cast<int>(new_length))
-    return;
+
+void ObjectObservation::EnqueueArrayLengthChange(JSArray* obj,
+                                                 uint32_t new_length) {
   Heap* heap = obj->GetHeap();
   Isolate* isolate = heap->isolate();
-  if (ObjectObservation::IsObserved(isolate, obj)) {
-    ObjectObservation::EnqueueObservationChange(
-        isolate, obj, heap->length_symbol(), "updated", obj->length());
-  }
+  if (!ObjectObservation::IsObserved(isolate, obj))
+    return;
+  // FIXME: Can't rely on length being an Smi.
+  if (Smi::cast(obj->length())->value() == static_cast<int>(new_length))
+    return;
+  ObjectObservation::EnqueueObservationChange(
+      isolate, obj, heap->length_symbol(), "updated", obj->length());
 }
 
 
@@ -9101,7 +9104,7 @@ MaybeObject* JSObject::SetFastElementsCapacityAndLength(
   }
 
   if (IsJSArray()) {
-    EnqueueLengthChange(JSArray::cast(this), length);
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), length);
     JSArray::cast(this)->set_length(Smi::FromInt(length));
   }
   return new_elements;
@@ -9155,7 +9158,7 @@ MaybeObject* JSObject::SetFastDoubleElementsCapacityAndLength(
   }
 
   if (IsJSArray()) {
-    EnqueueLengthChange(JSArray::cast(this), length);
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), length);
     JSArray::cast(this)->set_length(Smi::FromInt(length));
   }
 
@@ -9188,11 +9191,6 @@ void JSArray::Expand(int required_size) {
 MaybeObject* JSArray::SetElementsLength(Object* len) {
   // We should never end in here with a pixel or external array.
   ASSERT(AllowsSetElementsLength());
-  // FIXME: Should check that SetLength succeeded before enqueueing length
-  // change.
-  uint32_t index;
-  if (len->ToArrayIndex(&index))
-    EnqueueLengthChange(this, index);
   return GetElementsAccessor()->SetLength(this, len);
 }
 
@@ -9851,7 +9849,7 @@ MaybeObject* JSObject::SetFastElement(uint32_t index,
   ASSERT(elements()->IsFixedArray());
   backing_store->set(index, value);
   if (must_update_array_length) {
-    EnqueueLengthChange(JSArray::cast(this), array_length);
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), array_length);
     JSArray::cast(this)->set_length(Smi::FromInt(array_length));
   }
   return value;
@@ -10067,7 +10065,7 @@ MUST_USE_RESULT MaybeObject* JSObject::SetFastDoubleElement(
       uint32_t array_length = 0;
       CHECK(JSArray::cast(this)->length()->ToArrayIndex(&array_length));
       if (index >= array_length) {
-        EnqueueLengthChange(JSArray::cast(this), index + 1);
+        ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), index + 1);
         JSArray::cast(this)->set_length(Smi::FromInt(index + 1));
       }
     }
@@ -10429,7 +10427,7 @@ MaybeObject* JSArray::JSArrayUpdateLengthFromIndex(uint32_t index,
           GetHeap()->NumberFromDouble(static_cast<double>(index) + 1);
       if (!maybe_len->ToObject(&len)) return maybe_len;
     }
-    EnqueueLengthChange(JSArray::cast(this), index + 1);
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), index + 1);
     set_length(len);
   }
   return value;

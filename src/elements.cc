@@ -1646,6 +1646,7 @@ MUST_USE_RESULT MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass,
       if (!result->ToObject(&new_length)) return result;
       ASSERT(new_length->IsSmi() || new_length->IsUndefined());
       if (new_length->IsSmi()) {
+        ObjectObservation::EnqueueArrayLengthChange(array, value);
         array->set_length(Smi::cast(new_length));
         return array;
       }
@@ -1667,6 +1668,7 @@ MUST_USE_RESULT MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass,
           SetLengthWithoutNormalize(dictionary, array, length, value);
       if (!result->ToObject(&new_length)) return result;
       ASSERT(new_length->IsNumber());
+      ObjectObservation::EnqueueArrayLengthChange(array, value);
       array->set_length(new_length);
       return array;
     } else {
