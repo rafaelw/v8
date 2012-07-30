@@ -255,7 +255,8 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
   HandleScope scope(isolate);
   Handle<JSObject> object_handle(obj);
   Handle<String> name_handle(name);
-  Handle<Object> old_value_handle = old_value ? Handle<Object>(old_value) : Handle<Object>();
+  Handle<Object> old_value_handle =
+      old_value->IsTheHole() ? Handle<Object>() : Handle<Object>(old_value);
   Handle<String> observers_key = isolate->factory()->NewStringFromAscii(
       CStrVector(kHiddenChangeObserversStr));
   Object* observers = obj->GetHiddenProperty(*observers_key);
@@ -2290,7 +2291,7 @@ MaybeObject* JSReceiver::SetProperty(String* name,
   LocalLookup(name, &result);
 
   if (ObjectObservation::IsObserved(isolate, this)) {
-    Object* old_value = NULL;
+    Object* old_value = isolate->heap()->the_hole_value();
     if (result.IsFound() && (result.type() == NORMAL ||
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
@@ -2301,7 +2302,7 @@ MaybeObject* JSReceiver::SetProperty(String* name,
         (!old_value || !value->SameValue(old_value))) {
       ObjectObservation::EnqueueObservationChange(
           isolate, JSObject::cast(this), name,
-          old_value ? "updated" : "new", old_value);
+          old_value->IsTheHole() ? "new" : "updated", old_value);
     }
   }
 
@@ -4185,10 +4186,10 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
     if (maybe_name->To<String>(&name)) {
       // TODO(adamk): Do something safer instead of GetElement().
       MaybeObject* maybe_object = GetElement(index);
-      Object* oldValue = NULL;
-      maybe_object->ToObject(&oldValue);
+      Object* old_value = isolate->heap()->the_hole_value();
+      maybe_object->ToObject(&old_value);
       ObjectObservation::EnqueueObservationChange(
-          isolate, this, name, "deleted", oldValue);
+          isolate, this, name, "deleted", old_value);
     }
   }
 
@@ -4265,14 +4266,14 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
     }
 
     if (ObjectObservation::IsObserved(isolate, this)) {
-      Object* oldValue = NULL;
+      Object* old_value = isolate->heap()->the_hole_value();
       if (result.IsFound() && (result.type() == NORMAL ||
                                result.type() == FIELD ||
                                result.type() == CONSTANT_FUNCTION)) {
-        oldValue = result.GetLazyValue();
+        old_value = result.GetLazyValue();
       }
       ObjectObservation::EnqueueObservationChange(
-          isolate, this, name, "deleted", oldValue);
+          isolate, this, name, "deleted", old_value);
     }
 
     // Check for interceptor.
@@ -4925,7 +4926,7 @@ MaybeObject* JSObject::DefineAccessor(String* name,
   {
     LookupResult result(isolate);
     LocalLookup(name, &result);
-    Object* old_value = NULL;
+    Object* old_value = isolate->heap()->the_hole_value();
     if (result.IsFound() && (result.type() == NORMAL ||
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
@@ -10206,7 +10207,7 @@ MaybeObject* JSObject::SetElement(uint32_t index,
     if (old_value.is_null() || !old_value->SameValue(value)) {
       ObjectObservation::EnqueueObservationChange(
           isolate, this, *name, old_value.is_null() ? "new" : "updated",
-          old_value.is_null() ? NULL : *old_value);
+          old_value.is_null() ? isolate->heap()->the_hole_value() : *old_value);
     }
   }
 

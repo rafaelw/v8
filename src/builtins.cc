@@ -263,7 +263,8 @@ BUILTIN(ObjectNotifierNotify) {
 
   // FIXME: Should be enumerating over the passed-in changeRecord
   ObjectObservation::EnqueueObservationChange(
-      isolate, *target, *name, *type, old_value.is_null() ? NULL : *old_value);
+      isolate, *target, *name, *type,
+      old_value.is_null() ? isolate->heap()->the_hole_value() : *old_value);
 
   return isolate->heap()->undefined_value();
 }

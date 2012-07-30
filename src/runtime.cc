@@ -4483,7 +4483,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DefineOrRedefineDataProperty) {
 
   {
     // FIXME: This code lies about what happens to wrapper objects.
-    Object* old_value = NULL;
+    Object* old_value = isolate->heap()->the_hole_value();
     if (result.IsFound() && (result.type() == NORMAL ||
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
@@ -10126,32 +10126,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectUnobserve) {
 
   ObjectObservation::Unobserve(isolate, obj, observer);
   return isolate->heap()->undefined_value();
-}
-
-RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectNotifyObservers) {
-  HandleScope scope(isolate);
-  ASSERT(args.length() == 4);
-  Heap* heap = isolate->heap();
-  Factory* factory = isolate->factory();
-
-  CONVERT_ARG_CHECKED(JSObject, recordArg, 0);
-  CONVERT_ARG_CHECKED(JSObject, obj, 1);
-  CONVERT_ARG_CHECKED(String, mutationType, 2);
-  CONVERT_ARG_CHECKED(String, name, 3);
-
-  if (!ObjectObservation::IsObserved(isolate, obj))
-    return heap->undefined_value();
-
-  // FIXME: No idea why this doesn't work declaring as a CONVERT_ARG_CHECKED above.
-  Handle<String> old_value_sym = factory->NewStringFromAscii(CStrVector("oldValue"));
-  MaybeObject* maybeOldValue = recordArg->GetProperty(*old_value_sym);
-  Object* oldValue;
-  if (!maybeOldValue->ToObject(&oldValue))
-    return heap->undefined_value();
-
-  ObjectObservation::EnqueueObservationChange(isolate, obj, name, mutationType, oldValue);
-
-  return heap->undefined_value();
 }
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectGetNotifier) {
