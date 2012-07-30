@@ -10159,7 +10159,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectGetNotifier) {
   CONVERT_ARG_CHECKED(JSObject, raw_object, 0);
 
   HandleScope scope(isolate);
-  Heap* heap = isolate->heap();
   Factory* factory = isolate->factory();
 
   Handle<JSObject> object(raw_object);

@@ -342,7 +342,6 @@ void FireObjectObservations() {
     return;
   isolate->set_delivering_observations(true);
 
-  Factory* factory = isolate->factory();
   HandleScope scope(isolate);
 
   while (ObserverList* active_observers = isolate->active_observers()) {
