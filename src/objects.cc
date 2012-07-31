@@ -375,7 +375,8 @@ void ObjectObservation::EnqueueArrayLengthChange(JSArray* obj,
   Isolate* isolate = heap->isolate();
   if (!ObjectObservation::IsObserved(isolate, obj))
     return;
-  if (static_cast<uint32_t>(obj->length()->Number()) == new_length)
+  // FIXME: Can't rely on length being an Smi.
+  if (Smi::cast(obj->length())->value() == static_cast<int>(new_length))
     return;
   ObjectObservation::EnqueueObservationChange(
       isolate, obj, heap->length_symbol(), "updated", obj->length());
