@@ -746,6 +746,31 @@ class ElementsAccessorBase : public ElementsAccessor {
 };
 
 
+static MaybeObject* EnqueueTruncatedArrayRecords(Isolate* isolate,
+                                                 JSArray* array,
+                                                 uint32_t old_length,
+                                                 uint32_t new_length) {
+  ASSERT(old_length > new_length);
+  for (uint32_t i = old_length - 1; i >= new_length; --i) {
+    if (!array->HasElement(i))
+      continue;
+    // FIXME: Should compute all needed names outside the loop.
+    String* name;
+    { MaybeObject* maybe_name = isolate->heap()->Uint32ToString(i);
+      if (!maybe_name->To<String>(&name)) return maybe_name;
+    }
+    // FIXME: Should compute all needed old values outside the loop.
+    Object* old_value = isolate->heap()->the_hole_value();
+    { MaybeObject* maybe_old_value = array->GetElement(i);
+      if (!maybe_old_value->ToObject(&old_value)) return maybe_old_value;
+    }
+    ObjectObservation::EnqueueObservationChange(
+        isolate, array, name, "deleted", old_value);
+  }
+  return array;
+}
+
+
 // Super class for all fast element arrays.
 template<typename FastElementsAccessorSubclass,
          typename KindTraits,
@@ -778,6 +803,16 @@ class FastElementsAccessor
         !IsFastHoleyElementsKind(kind)) {
       kind = GetHoleyElementsKind(kind);
       MaybeObject* maybe_obj = array->TransitionElementsKind(kind);
+      if (maybe_obj->IsFailure()) return maybe_obj;
+    }
+
+    Isolate* isolate = array->GetHeap()->isolate();
+    uint32_t old_length_num;
+    old_length->ToArrayIndex(&old_length_num);
+    if (length < old_length_num &&
+        ObjectObservation::IsObserved(isolate, array)) {
+      MaybeObject* maybe_obj =
+          EnqueueTruncatedArrayRecords(isolate, array, old_length_num, length);
       if (maybe_obj->IsFailure()) return maybe_obj;
     }
 
@@ -1296,6 +1331,13 @@ class DictionaryElementsAccessor
         if (new_length != length) {
           MaybeObject* maybe_object = heap->NumberFromUint32(new_length);
           if (!maybe_object->To(&length_object)) return maybe_object;
+        }
+
+        if (new_length < old_length &&
+            ObjectObservation::IsObserved(heap->isolate(), array)) {
+          MaybeObject* maybe_obj = EnqueueTruncatedArrayRecords(
+              heap->isolate(), array, old_length, new_length);
+          if (maybe_obj->IsFailure()) return maybe_obj;
         }
 
         // Remove elements that should be deleted.
