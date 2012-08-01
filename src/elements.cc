@@ -758,8 +758,8 @@ static void EnqueueTruncatedArrayRecords(Isolate* isolate,
   }
   for (int i = 0; i < indices.length(); ++i) {
     ObjectObservation::EnqueueObservationChange(
-        isolate, *array, indices[i], isolate->heap()->deleted_symbol(),
-        *old_value_handles[i]);
+        isolate, array, indices[i], isolate->factory()->deleted_symbol(),
+        old_value_handles[i]);
   }
 }
 

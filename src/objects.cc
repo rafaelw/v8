@@ -218,25 +218,22 @@ static inline bool IsActiveObserver(Isolate* isolate, JSFunction* observer) {
 }
 
 void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
-                                                 JSObject* obj,
+                                                 Handle<JSObject> obj,
                                                  uint32_t index,
-                                                 String* type,
-                                                 Object* old_value) {
+                                                 Handle<String> type,
+                                                 Handle<Object> old_value) {
   Handle<String> name = isolate->factory()->Uint32ToString(index);
-  EnqueueObservationChange(isolate, obj, *name, type, old_value);
+  EnqueueObservationChange(isolate, obj, name, type, old_value);
 }
 
 // FIXME: Should take handles instead of raw pointers.
 void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
-                                                 JSObject* obj,
-                                                 String* name,
-                                                 String* type,
-                                                 Object* old_value) {
+                                                 Handle<JSObject> object,
+                                                 Handle<String> name,
+                                                 Handle<String> type,
+                                                 Handle<Object> old_value) {
   HandleScope scope(isolate);
-  Handle<JSObject> object_handle(obj);
-  Handle<String> name_handle(name);
-  Handle<Object> old_value_handle(old_value);
-  Object* observers = obj->GetHiddenProperty(
+  Object* observers = object->GetHiddenProperty(
       isolate->heap()->hidden_change_observers_symbol());
   if (observers->IsUndefined())
     return;
@@ -248,16 +245,16 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
     AddRecordToObserver(
         isolate, observer,
         CreateChangeRecord(
-            isolate, object_handle, name_handle, Handle<String>(type),
-            old_value_handle));
+            isolate, object, name, Handle<String>(type), old_value));
 
     if (!isolate->active_observers())
       isolate->set_active_observers(new ObserverList);
 
     if (!IsActiveObserver(isolate, *observer)) {
-      Handle<Object> handle = isolate->global_handles()->Create(*observer);
+      Handle<Object> global_handle =
+          isolate->global_handles()->Create(*observer);
       ObserverWithPriority owp = {
-        Handle<JSFunction>::cast(handle),
+        Handle<JSFunction>::cast(global_handle),
         GetObserverPriority(isolate, *observer)
       };
       isolate->active_observers()->Add(owp);
@@ -347,13 +344,14 @@ void ObjectObservation::EnqueueArrayLengthChange(Handle<JSArray> array,
                                                  uint32_t new_length) {
   Heap* heap = array->GetHeap();
   Isolate* isolate = heap->isolate();
+  Factory* factory = isolate->factory();
   if (!ObjectObservation::IsObserved(isolate, *array))
     return;
   if (static_cast<uint32_t>(array->length()->Number()) == new_length)
     return;
   ObjectObservation::EnqueueObservationChange(
-      isolate, *array, heap->length_symbol(), heap->updated_symbol(),
-      array->length());
+      isolate, array, factory->length_symbol(), factory->updated_symbol(),
+      Handle<Object>(array->length()));
 }
 
 
@@ -2280,11 +2278,12 @@ MaybeObject* JSReceiver::SetProperty(String* name,
       (!old_value || !value->SameValue(old_value))) {
     HandleScope scope(isolate);
     Handle<Object> object_handle(object);
-    Heap* heap = isolate->heap();
+    Factory* factory = isolate->factory();
     ObjectObservation::EnqueueObservationChange(
-        isolate, JSObject::cast(this), name,
-        old_value->IsTheHole() ? heap->new_symbol() : heap->updated_symbol(),
-        old_value);
+        isolate, Handle<JSObject>(JSObject::cast(this)),
+        Handle<String>(name),
+        old_value->IsTheHole() ? factory->new_symbol() : factory->updated_symbol(),
+        Handle<Object>(old_value));
   }
   return maybe_object;
 }
@@ -4194,7 +4193,10 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
         HandleScope scope(isolate);
         Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
         ObjectObservation::EnqueueObservationChange(
-            isolate, this, name, isolate->heap()->deleted_symbol(), old_value);
+            isolate, Handle<JSObject>(this),
+            Handle<String>(name),
+            isolate->factory()->deleted_symbol(),
+            Handle<Object>(old_value));
       }
       return maybe_object;
     }
@@ -4206,7 +4208,8 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
     HandleScope scope(isolate);
     Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
     ObjectObservation::EnqueueObservationChange(
-        isolate, this, name, isolate->heap()->deleted_symbol(), old_value);
+        isolate, Handle<JSObject>(this), Handle<String>(name),
+        isolate->factory()->deleted_symbol(), Handle<Object>(old_value));
   }
   return maybe_object;
 }
@@ -4279,7 +4282,8 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
         HandleScope scope(isolate);
         Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
         ObjectObservation::EnqueueObservationChange(
-            isolate, this, name, isolate->heap()->deleted_symbol(), old_value);
+            isolate, Handle<JSObject>(this), Handle<String>(name),
+            isolate->factory()->deleted_symbol(), Handle<Object>(old_value));
       }
       return maybe_object;
     }
@@ -4295,7 +4299,8 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
       HandleScope scope(isolate);
       Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
       ObjectObservation::EnqueueObservationChange(
-          isolate, this, name, isolate->heap()->deleted_symbol(), old_value);
+          isolate, Handle<JSObject>(this), Handle<String>(name),
+          isolate->factory()->deleted_symbol(), Handle<Object>(old_value));
     }
     return maybe_object;
   }
@@ -4950,8 +4955,9 @@ MaybeObject* JSObject::DefineAccessor(String* name,
     HandleScope scope(isolate);
     Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
     ObjectObservation::EnqueueObservationChange(
-        isolate, this, name, isolate->heap()->reconfigured_symbol(),
-        old_value);
+        isolate, Handle<JSObject>(this), Handle<String>(name),
+        isolate->factory()->reconfigured_symbol(),
+        Handle<Object>(old_value));
   }
   return maybe_object;
 }
@@ -10253,10 +10259,11 @@ MaybeObject* JSObject::SetElement(uint32_t index,
   if (!maybe_object->IsFailure() && name && !old_value->SameValue(value)) {
     HandleScope scope(isolate);
     Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
+    Factory* factory = isolate->factory();
     ObjectObservation::EnqueueObservationChange(
-        isolate, this, name,
-        old_value->IsTheHole() ? heap->new_symbol() : heap->updated_symbol(),
-        old_value);
+        isolate, Handle<JSObject>(this), Handle<String>(name),
+        old_value->IsTheHole() ? factory->new_symbol() : factory->updated_symbol(),
+        Handle<Object>(old_value));
   }
   return maybe_object;
 }

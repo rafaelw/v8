@@ -8703,12 +8703,12 @@ class ObjectObservation {
   static void Observe(Isolate* isolate,
                       Handle<JSObject> object, Handle<JSObject> observer);
   static void Unobserve(Isolate* isolate, JSObject* object, JSObject* observer);
-  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
-                                       String* name, String* type,
-                                       Object* old_value);
-  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
-                                       uint32_t index, String* type,
-                                       Object* old_value);
+  static void EnqueueObservationChange(Isolate* isolate, Handle<JSObject> obj,
+                                       Handle<String> name, Handle<String> type,
+                                       Handle<Object> old_value);
+  static void EnqueueObservationChange(Isolate* isolate, Handle<JSObject> obj,
+                                       uint32_t index, Handle<String> type,
+                                       Handle<Object> old_value);
   static void EnqueueArrayLengthChange(Handle<JSArray> array, uint32_t new_length);
   static void DeliverChangeRecords(Isolate* isolate, Handle<JSFunction> observer);
 };

@@ -236,17 +236,14 @@ BUILTIN(ObjectNotifierNotify) {
         "illegal_invocation", HandleVector<Object>(NULL, 0)));
   }
 
-  Handle<String> name_sym = factory->LookupAsciiSymbol("name");
-  Handle<String> old_value_sym = factory->LookupAsciiSymbol("oldValue");
-
   Handle<String> name;
-  Handle<Object> old_value;
+  Handle<Object> old_value(heap->the_hole_value());
   // FIXME: Rather than pulling out these three symbols, should just iterate
   // over all enumerable properties (exception 'object') in the passed-in
   // record.
   {
     LookupResult result(isolate);
-    record_arg->Lookup(*name_sym, &result);
+    record_arg->Lookup(heap->name_symbol(), &result);
     if (result.IsFound()) {
       Object* obj = result.GetLazyValue();
       if (obj->IsString())
@@ -256,15 +253,14 @@ BUILTIN(ObjectNotifierNotify) {
 
   {
     LookupResult result(isolate);
-    record_arg->Lookup(*old_value_sym, &result);
+    record_arg->Lookup(heap->old_value_symbol(), &result);
     if (result.IsFound())
       old_value = Handle<Object>(result.GetLazyValue());
   }
 
   // FIXME: Should be enumerating over the passed-in changeRecord
   ObjectObservation::EnqueueObservationChange(
-      isolate, *target, *name, *type,
-      old_value.is_null() ? isolate->heap()->the_hole_value() : *old_value);
+      isolate, target, name, type, old_value);
 
   return isolate->heap()->undefined_value();
 }
