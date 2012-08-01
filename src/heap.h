@@ -202,6 +202,15 @@ namespace internal {
   V(char_at_symbol, "CharAt")                                            \
   V(undefined_symbol, "undefined")                                       \
   V(value_of_symbol, "valueOf")                                          \
+  V(old_value_symbol, "oldValue")                                        \
+  V(type_symbol, "type")                                                 \
+  V(deleted_symbol, "deleted")                                           \
+  V(new_symbol, "new")                                                   \
+  V(reconfigured_symbol, "reconfigured")                                 \
+  V(updated_symbol, "updated")                                           \
+  V(hidden_change_observers_symbol, "___changeObservers")                \
+  V(hidden_change_records_symbol, "___changeRecords")                    \
+  V(hidden_observer_priority_symbol, "___observerPriority")              \
   V(InitializeVarGlobal_symbol, "InitializeVarGlobal")                   \
   V(InitializeConstGlobal_symbol, "InitializeConstGlobal")               \
   V(KeyedLoadElementMonomorphic_symbol,                                  \

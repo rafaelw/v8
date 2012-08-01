@@ -8704,12 +8704,12 @@ class ObjectObservation {
                       Handle<JSObject> object, Handle<JSObject> observer);
   static void Unobserve(Isolate* isolate, JSObject* object, JSObject* observer);
   static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
-                                       String* name, const char* type,
-                                       Object* old_value);
-  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
                                        String* name, String* type,
                                        Object* old_value);
-  static void EnqueueArrayLengthChange(JSArray* obj, uint32_t new_length);
+  static void EnqueueObservationChange(Isolate* isolate, JSObject* obj,
+                                       uint32_t index, String* type,
+                                       Object* old_value);
+  static void EnqueueArrayLengthChange(Handle<JSArray> array, uint32_t new_length);
   static void DeliverChangeRecords(Isolate* isolate, Handle<JSFunction> observer);
 };
 // Abstract base class for visiting, and optionally modifying, the

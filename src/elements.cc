@@ -746,28 +746,21 @@ class ElementsAccessorBase : public ElementsAccessor {
 };
 
 
-static MaybeObject* EnqueueTruncatedArrayRecords(Isolate* isolate,
-                                                 JSArray* array,
-                                                 uint32_t old_length,
-                                                 uint32_t new_length) {
-  ASSERT(old_length > new_length);
-  while (old_length-- > new_length) {
-    if (!array->HasElement(old_length))
-      continue;
-    // FIXME: Should compute all needed names outside the loop.
-    String* name;
-    { MaybeObject* maybe_name = isolate->heap()->Uint32ToString(old_length);
-      if (!maybe_name->To<String>(&name)) return maybe_name;
-    }
-    // FIXME: Should compute all needed old values outside the loop.
-    Object* old_value = isolate->heap()->the_hole_value();
-    { MaybeObject* maybe_old_value = array->GetElement(old_length);
-      if (!maybe_old_value->ToObject(&old_value)) return maybe_old_value;
-    }
-    ObjectObservation::EnqueueObservationChange(
-        isolate, array, name, "deleted", old_value);
+static void EnqueueTruncatedArrayRecords(Isolate* isolate,
+                                         Handle<JSArray> array,
+                                         const List<uint32_t>& indices,
+                                         const List<Object*>& old_values) {
+  ASSERT(indices.length() == old_values.length());
+  Vector< Handle<Object> > old_value_handles =
+      Vector< Handle<Object> >::New(old_values.length());
+  for (int i = 0; i < old_values.length(); ++i) {
+    old_value_handles[i] = Handle<Object>(old_values[i]);
   }
-  return array;
+  for (int i = 0; i < indices.length(); ++i) {
+    ObjectObservation::EnqueueObservationChange(
+        isolate, *array, indices[i], isolate->heap()->deleted_symbol(),
+        *old_value_handles[i]);
+  }
 }
 
 
@@ -806,22 +799,31 @@ class FastElementsAccessor
       if (maybe_obj->IsFailure()) return maybe_obj;
     }
 
-    Isolate* isolate = array->GetHeap()->isolate();
-    uint32_t old_length_num;
-    old_length->ToArrayIndex(&old_length_num);
-    if (length < old_length_num &&
-        ObjectObservation::IsObserved(isolate, array)) {
-      MaybeObject* maybe_obj =
-          EnqueueTruncatedArrayRecords(isolate, array, old_length_num, length);
-      if (maybe_obj->IsFailure()) return maybe_obj;
-    }
-
     // Check whether the backing store should be shrunk.
     if (length <= old_capacity) {
       if (array->HasFastSmiOrObjectElements()) {
         MaybeObject* maybe_obj = array->EnsureWritableFastElements();
         if (!maybe_obj->To(&backing_store)) return maybe_obj;
       }
+      List<uint32_t> indices;
+      List<Object*> old_values;
+      Isolate* isolate = array->GetHeap()->isolate();
+      uint32_t end_index = static_cast<uint32_t>(old_length->Number());
+      if (length < end_index &&
+          ObjectObservation::IsObserved(isolate, array)) {
+        while (end_index-- > length) {
+          if (!backing_store->is_the_hole(end_index)) {
+            indices.Add(end_index);
+            // FIXME: Should be able to access the backing_store directly here
+            Object* old_value;
+            { MaybeObject* maybe_object = array->GetElement(end_index);
+              if (!maybe_object->ToObject(&old_value)) return maybe_object;
+            }
+            old_values.Add(old_value);
+          }
+        }
+      }
+
       if (2 * length <= old_capacity) {
         // If more than half the elements won't be used, trim the array.
         if (length == 0) {
@@ -839,6 +841,13 @@ class FastElementsAccessor
         for (int i = length; i < old_length; i++) {
           backing_store->set_the_hole(i);
         }
+      }
+      if (!indices.is_empty()) {
+        ASSERT(indices.length() == old_values.length());
+        HandleScope scope(isolate);
+        Handle<Object> length_handle(length_object);
+        EnqueueTruncatedArrayRecords(isolate, Handle<JSArray>(array),
+                                     indices, old_values);
       }
       return length_object;
     }
@@ -1303,6 +1312,24 @@ class DictionaryElementsAccessor
       JSArray* array,
       Object* length_object,
       uint32_t length) {
+    List<uint32_t> indices;
+    List<Object*> old_values;
+    Isolate* isolate = array->GetHeap()->isolate();
+    uint32_t old_length = static_cast<uint32_t>(array->length()->Number());
+    if (length < old_length &&
+        ObjectObservation::IsObserved(isolate, array)) {
+      uint32_t end_index = old_length;
+      while (end_index-- > length) {
+        if (array->HasElement(end_index)) {
+          indices.Add(end_index);
+          Object* old_value;
+          { MaybeObject* maybe_object = array->GetElement(end_index);
+            if (!maybe_object->ToObject(&old_value)) return maybe_object;
+          }
+          old_values.Add(old_value);
+        }
+      }
+    }
     if (length == 0) {
       // If the length of a slow array is reset to zero, we clear
       // the array and flush backing storage. This has the added
@@ -1312,7 +1339,6 @@ class DictionaryElementsAccessor
       if (!maybe_obj->ToObject(&obj)) return maybe_obj;
     } else {
       uint32_t new_length = length;
-      uint32_t old_length = static_cast<uint32_t>(array->length()->Number());
       if (new_length < old_length) {
         // Find last non-deletable element in range of elements to be
         // deleted and adjust range accordingly.
@@ -1333,13 +1359,6 @@ class DictionaryElementsAccessor
           if (!maybe_object->To(&length_object)) return maybe_object;
         }
 
-        if (new_length < old_length &&
-            ObjectObservation::IsObserved(heap->isolate(), array)) {
-          MaybeObject* maybe_obj = EnqueueTruncatedArrayRecords(
-              heap->isolate(), array, old_length, new_length);
-          if (maybe_obj->IsFailure()) return maybe_obj;
-        }
-
         // Remove elements that should be deleted.
         int removed_entries = 0;
         Object* the_hole_value = heap->the_hole_value();
@@ -1357,6 +1376,13 @@ class DictionaryElementsAccessor
         // Update the number of elements.
         dict->ElementsRemoved(removed_entries);
       }
+    }
+    if (!indices.is_empty()) {
+      ASSERT(indices.length() == old_values.length());
+      HandleScope scope(isolate);
+      Handle<Object> length_handle(length_object);
+      EnqueueTruncatedArrayRecords(isolate, Handle<JSArray>(array),
+                                   indices, old_values);
     }
     return length_object;
   }
@@ -1688,7 +1714,9 @@ MUST_USE_RESULT MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass,
       if (!result->ToObject(&new_length)) return result;
       ASSERT(new_length->IsSmi() || new_length->IsUndefined());
       if (new_length->IsSmi()) {
-        ObjectObservation::EnqueueArrayLengthChange(array, value);
+        HandleScope scope(array->GetHeap()->isolate());
+        Handle<JSArray> array_handle(array);
+        ObjectObservation::EnqueueArrayLengthChange(array_handle, value);
         array->set_length(Smi::cast(new_length));
         return array;
       }
@@ -1710,7 +1738,9 @@ MUST_USE_RESULT MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass,
           SetLengthWithoutNormalize(dictionary, array, length, value);
       if (!result->ToObject(&new_length)) return result;
       ASSERT(new_length->IsNumber());
-      ObjectObservation::EnqueueArrayLengthChange(array, value);
+      HandleScope scope(array->GetHeap()->isolate());
+      Handle<JSArray> array_handle(array);
+      ObjectObservation::EnqueueArrayLengthChange(array_handle, value);
       array->set_length(new_length);
       return array;
     } else {

@@ -4482,15 +4482,17 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DefineOrRedefineDataProperty) {
   js_object->LocalLookupRealNamedProperty(*name, &result);
 
   {
+    Heap* heap = isolate->heap();
     // FIXME: This code lies about what happens to wrapper objects.
-    Object* old_value = isolate->heap()->the_hole_value();
+    Object* old_value = heap->the_hole_value();
     if (result.IsFound() && (result.type() == NORMAL ||
                              result.type() == FIELD ||
                              result.type() == CONSTANT_FUNCTION)) {
       old_value = result.GetLazyValue();
     }
     ObjectObservation::EnqueueObservationChange(
-       isolate, *js_object, *name, result.IsFound() ? "reconfigured" : "new",
+       isolate, *js_object, *name,
+       result.IsFound() ? heap->reconfigured_symbol() : heap->new_symbol(),
        old_value);
   }
 
