@@ -4180,7 +4180,8 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
       if (!maybe_name->To(&name)) return maybe_name;
     }
     // FIXME: Shouldn't use GetElement here
-    { MaybeObject* maybe_object = GetElement(index);
+    if (HasElement(index)) {
+      MaybeObject* maybe_object = GetElement(index);
       if (!maybe_object->ToObject(&old_value)) return maybe_object;
     }
   }
@@ -10238,8 +10239,10 @@ MaybeObject* JSObject::SetElement(uint32_t index,
     MaybeObject* maybe_name = heap->Uint32ToString(index);
     if (!maybe_name->To(&name)) return maybe_name;
     // FIXME: Shouldn't use GetElement here
-    MaybeObject* maybe_object = GetElement(index);
-    if (!maybe_object->ToObject(&old_value)) return maybe_object;
+    if (HasElement(index)) {
+      MaybeObject* maybe_object = GetElement(index);
+      if (!maybe_object->ToObject(&old_value)) return maybe_object;
+    }
   }
 
   // Check for lookup interceptor
