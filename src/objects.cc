@@ -237,7 +237,7 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
       isolate->heap()->hidden_change_observers_symbol());
   if (observers->IsUndefined())
     return;
-  FixedArray* observers_array = FixedArray::cast(observers);
+  Handle<FixedArray> observers_array(FixedArray::cast(observers));
   for (int i = 0; i < observers_array->length(); ++i) {
     if (observers_array->is_the_hole(i))
       continue;
