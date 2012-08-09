@@ -1080,8 +1080,8 @@ void BinaryOpStub::GenerateSmiCode(
     SmiCodeGenerateHeapNumberResults allow_heapnumber_results) {
 
   // Arguments to BinaryOpStub are in rdx and rax.
-  Register left = rdx;
-  Register right = rax;
+  const Register left = rdx;
+  const Register right = rax;
 
   // We only generate heapnumber answers for overflowing calculations
   // for the four basic arithmetic operations and logical right shift by 0.
@@ -1123,20 +1123,16 @@ void BinaryOpStub::GenerateSmiCode(
 
     case Token::DIV:
       // SmiDiv will not accept left in rdx or right in rax.
-      left = rcx;
-      right = rbx;
       __ movq(rbx, rax);
       __ movq(rcx, rdx);
-      __ SmiDiv(rax, left, right, &use_fp_on_smis);
+      __ SmiDiv(rax, rcx, rbx, &use_fp_on_smis);
       break;
 
     case Token::MOD:
       // SmiMod will not accept left in rdx or right in rax.
-      left = rcx;
-      right = rbx;
       __ movq(rbx, rax);
       __ movq(rcx, rdx);
-      __ SmiMod(rax, left, right, &use_fp_on_smis);
+      __ SmiMod(rax, rcx, rbx, &use_fp_on_smis);
       break;
 
     case Token::BIT_OR: {
@@ -2795,7 +2791,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Calculate number of capture registers (number_of_captures + 1) * 2.
   __ leal(rdx, Operand(rdx, rdx, times_1, 2));
   // Check that the static offsets vector buffer is large enough.
-  __ cmpl(rdx, Immediate(OffsetsVector::kStaticOffsetsVectorSize));
+  __ cmpl(rdx, Immediate(Isolate::kJSRegexpStaticOffsetsVectorSize));
   __ j(above, &runtime);
 
   // rax: RegExp data (FixedArray)
@@ -6418,6 +6414,74 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
                                  xmm0,
                                  &slow_elements);
   __ ret(0);
+}
+
+
+void ProfileEntryHookStub::MaybeCallEntryHook(MacroAssembler* masm) {
+  if (entry_hook_ != NULL) {
+    ProfileEntryHookStub stub;
+    masm->CallStub(&stub);
+  }
+}
+
+
+void ProfileEntryHookStub::Generate(MacroAssembler* masm) {
+  // Save volatile registers.
+  // Live registers at this point are the same as at the start of any
+  // JS function:
+  //   o rdi: the JS function object being called (i.e. ourselves)
+  //   o rsi: our context
+  //   o rbp: our caller's frame pointer
+  //   o rsp: stack pointer (pointing to return address)
+  //   o rcx: rcx is zero for method calls and non-zero for function calls.
+#ifdef _WIN64
+  const int kNumSavedRegisters = 1;
+
+  __ push(rcx);
+#else
+  const int kNumSavedRegisters = 3;
+
+  __ push(rcx);
+  __ push(rdi);
+  __ push(rsi);
+#endif
+
+  // Calculate the original stack pointer and store it in the second arg.
+#ifdef _WIN64
+  __ lea(rdx, Operand(rsp, kNumSavedRegisters * kPointerSize));
+#else
+  __ lea(rsi, Operand(rsp, kNumSavedRegisters * kPointerSize));
+#endif
+
+  // Calculate the function address to the first arg.
+#ifdef _WIN64
+  __ movq(rcx, Operand(rdx, 0));
+  __ subq(rcx, Immediate(Assembler::kShortCallInstructionLength));
+#else
+  __ movq(rdi, Operand(rsi, 0));
+  __ subq(rdi, Immediate(Assembler::kShortCallInstructionLength));
+#endif
+
+  // Call the entry hook function.
+  __ movq(rax, &entry_hook_, RelocInfo::NONE);
+  __ movq(rax, Operand(rax, 0));
+
+  AllowExternalCallThatCantCauseGC scope(masm);
+
+  const int kArgumentCount = 2;
+  __ PrepareCallCFunction(kArgumentCount);
+  __ CallCFunction(rax, kArgumentCount);
+
+  // Restore volatile regs.
+#ifdef _WIN64
+  __ pop(rcx);
+#else
+  __ pop(rsi);
+  __ pop(rdi);
+  __ pop(rcx);
+#endif
+
+  __ Ret();
 }
 
 #undef __

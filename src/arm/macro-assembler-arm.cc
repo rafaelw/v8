@@ -179,7 +179,7 @@ void MacroAssembler::Call(Address target,
 
 int MacroAssembler::CallSize(Handle<Code> code,
                              RelocInfo::Mode rmode,
-                             unsigned ast_id,
+                             TypeFeedbackId ast_id,
                              Condition cond) {
   return CallSize(reinterpret_cast<Address>(code.location()), rmode, cond);
 }
@@ -187,12 +187,12 @@ int MacroAssembler::CallSize(Handle<Code> code,
 
 void MacroAssembler::Call(Handle<Code> code,
                           RelocInfo::Mode rmode,
-                          unsigned ast_id,
+                          TypeFeedbackId ast_id,
                           Condition cond) {
   Label start;
   bind(&start);
   ASSERT(RelocInfo::IsCodeTarget(rmode));
-  if (rmode == RelocInfo::CODE_TARGET && ast_id != kNoASTId) {
+  if (rmode == RelocInfo::CODE_TARGET && !ast_id.IsNone()) {
     SetRecordedAstId(ast_id);
     rmode = RelocInfo::CODE_TARGET_WITH_ID;
   }
@@ -265,8 +265,8 @@ void MacroAssembler::Move(Register dst, Register src, Condition cond) {
 
 
 void MacroAssembler::Move(DoubleRegister dst, DoubleRegister src) {
-  ASSERT(CpuFeatures::IsSupported(VFP3));
-  CpuFeatures::Scope scope(VFP3);
+  ASSERT(CpuFeatures::IsSupported(VFP2));
+  CpuFeatures::Scope scope(VFP2);
   if (!dst.is(src)) {
     vmov(dst, src);
   }
@@ -778,7 +778,7 @@ void MacroAssembler::VFPCompareAndLoadFlags(const DwVfpRegister src1,
 void MacroAssembler::Vmov(const DwVfpRegister dst,
                           const double imm,
                           const Condition cond) {
-  ASSERT(CpuFeatures::IsEnabled(VFP3));
+  ASSERT(CpuFeatures::IsEnabled(VFP2));
   static const DoubleRepresentation minus_zero(-0.0);
   static const DoubleRepresentation zero(0.0);
   DoubleRepresentation value(imm);
@@ -930,6 +930,7 @@ void MacroAssembler::LeaveExitFrame(bool save_doubles,
 }
 
 void MacroAssembler::GetCFunctionDoubleResult(const DoubleRegister dst) {
+  ASSERT(CpuFeatures::IsSupported(VFP2));
   if (use_eabi_hardfloat()) {
     Move(dst, d0);
   } else {
@@ -1967,7 +1968,7 @@ void MacroAssembler::StoreNumberToDoubleElements(Register value_reg,
   // scratch1 is now effective address of the double element
 
   FloatingPointHelper::Destination destination;
-  if (CpuFeatures::IsSupported(VFP3)) {
+  if (CpuFeatures::IsSupported(VFP2)) {
     destination = FloatingPointHelper::kVFPRegisters;
   } else {
     destination = FloatingPointHelper::kCoreRegisters;
@@ -1984,7 +1985,7 @@ void MacroAssembler::StoreNumberToDoubleElements(Register value_reg,
                                           scratch4,
                                           s2);
   if (destination == FloatingPointHelper::kVFPRegisters) {
-    CpuFeatures::Scope scope(VFP3);
+    CpuFeatures::Scope scope(VFP2);
     vstr(d0, scratch1, 0);
   } else {
     str(mantissa_reg, MemOperand(scratch1, 0));
@@ -2135,7 +2136,7 @@ void MacroAssembler::TryGetFunctionPrototype(Register function,
 
 void MacroAssembler::CallStub(CodeStub* stub, Condition cond) {
   ASSERT(AllowThisStubCall(stub));  // Stub calls are not allowed in some stubs.
-  Call(stub->GetCode(), RelocInfo::CODE_TARGET, kNoASTId, cond);
+  Call(stub->GetCode(), RelocInfo::CODE_TARGET, TypeFeedbackId::None(), cond);
 }
 
 
@@ -2331,8 +2332,8 @@ void MacroAssembler::ConvertToInt32(Register source,
                                     Register scratch2,
                                     DwVfpRegister double_scratch,
                                     Label *not_int32) {
-  if (CpuFeatures::IsSupported(VFP3)) {
-    CpuFeatures::Scope scope(VFP3);
+  if (CpuFeatures::IsSupported(VFP2)) {
+    CpuFeatures::Scope scope(VFP2);
     sub(scratch, source, Operand(kHeapObjectTag));
     vldr(double_scratch, scratch, HeapNumber::kValueOffset);
     vcvt_s32_f64(double_scratch.low(), double_scratch);
@@ -2427,8 +2428,8 @@ void MacroAssembler::EmitVFPTruncate(VFPRoundingMode rounding_mode,
                                      Register scratch1,
                                      Register scratch2,
                                      CheckForInexactConversion check_inexact) {
-  ASSERT(CpuFeatures::IsSupported(VFP3));
-  CpuFeatures::Scope scope(VFP3);
+  ASSERT(CpuFeatures::IsSupported(VFP2));
+  CpuFeatures::Scope scope(VFP2);
   Register prev_fpscr = scratch1;
   Register scratch = scratch2;
 
@@ -2546,7 +2547,7 @@ void MacroAssembler::EmitECMATruncate(Register result,
                                       Register scratch,
                                       Register input_high,
                                       Register input_low) {
-  CpuFeatures::Scope scope(VFP3);
+  CpuFeatures::Scope scope(VFP2);
   ASSERT(!input_high.is(result));
   ASSERT(!input_low.is(result));
   ASSERT(!input_low.is(input_high));
@@ -3332,6 +3333,7 @@ void MacroAssembler::PrepareCallCFunction(int num_reg_arguments,
 
 
 void MacroAssembler::SetCallCDoubleArguments(DoubleRegister dreg) {
+  ASSERT(CpuFeatures::IsSupported(VFP2));
   if (use_eabi_hardfloat()) {
     Move(d0, dreg);
   } else {
@@ -3342,6 +3344,7 @@ void MacroAssembler::SetCallCDoubleArguments(DoubleRegister dreg) {
 
 void MacroAssembler::SetCallCDoubleArguments(DoubleRegister dreg1,
                                              DoubleRegister dreg2) {
+  ASSERT(CpuFeatures::IsSupported(VFP2));
   if (use_eabi_hardfloat()) {
     if (dreg2.is(d0)) {
       ASSERT(!dreg1.is(d1));
@@ -3360,6 +3363,7 @@ void MacroAssembler::SetCallCDoubleArguments(DoubleRegister dreg1,
 
 void MacroAssembler::SetCallCDoubleArguments(DoubleRegister dreg,
                                              Register reg) {
+  ASSERT(CpuFeatures::IsSupported(VFP2));
   if (use_eabi_hardfloat()) {
     Move(d0, dreg);
     Move(r0, reg);
@@ -3673,13 +3677,21 @@ void MacroAssembler::ClampDoubleToUint8(Register result_reg,
 
 
 void MacroAssembler::LoadInstanceDescriptors(Register map,
-                                             Register descriptors) {
+                                             Register descriptors,
+                                             Register scratch) {
   ldr(descriptors,
-      FieldMemOperand(map, Map::kInstanceDescriptorsOrBitField3Offset));
-  Label not_smi;
-  JumpIfNotSmi(descriptors, &not_smi);
+      FieldMemOperand(map, Map::kInstanceDescriptorsOrBackPointerOffset));
+
+  Label ok, fail;
+  CheckMap(descriptors,
+           scratch,
+           isolate()->factory()->fixed_array_map(),
+           &fail,
+           DONT_DO_SMI_CHECK);
+  jmp(&ok);
+  bind(&fail);
   mov(descriptors, Operand(FACTORY->empty_descriptor_array()));
-  bind(&not_smi);
+  bind(&ok);
 }
 
 
@@ -3704,13 +3716,18 @@ void MacroAssembler::CheckEnumCache(Register null_value, Label* call_runtime) {
   // check for an enum cache.  Leave the map in r2 for the subsequent
   // prototype load.
   ldr(r2, FieldMemOperand(r1, HeapObject::kMapOffset));
-  ldr(r3, FieldMemOperand(r2, Map::kInstanceDescriptorsOrBitField3Offset));
-  JumpIfSmi(r3, call_runtime);
+  ldr(r3, FieldMemOperand(r2, Map::kInstanceDescriptorsOrBackPointerOffset));
+
+  CheckMap(r3,
+           r7,
+           isolate()->factory()->fixed_array_map(),
+           call_runtime,
+           DONT_DO_SMI_CHECK);
 
   // Check that there is an enum cache in the non-empty instance
   // descriptors (r3).  This is the case if the next enumeration
   // index field does not contain a smi.
-  ldr(r3, FieldMemOperand(r3, DescriptorArray::kEnumerationIndexOffset));
+  ldr(r3, FieldMemOperand(r3, DescriptorArray::kEnumCacheOffset));
   JumpIfSmi(r3, call_runtime);
 
   // For all objects but the receiver, check that the cache is empty.

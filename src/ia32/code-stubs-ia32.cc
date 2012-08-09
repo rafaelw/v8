@@ -3748,7 +3748,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 1);
   __ add(edx, Immediate(2));  // edx was a smi.
   // Check that the static offsets vector buffer is large enough.
-  __ cmp(edx, OffsetsVector::kStaticOffsetsVectorSize);
+  __ cmp(edx, Isolate::kJSRegexpStaticOffsetsVectorSize);
   __ j(above, &runtime);
 
   // ecx: RegExp data (FixedArray)
@@ -7471,6 +7471,38 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
                                  &slow_elements_from_double,
                                  false);
   __ pop(edx);
+  __ ret(0);
+}
+
+
+void ProfileEntryHookStub::MaybeCallEntryHook(MacroAssembler* masm) {
+  if (entry_hook_ != NULL) {
+    ProfileEntryHookStub stub;
+    masm->CallStub(&stub);
+  }
+}
+
+
+void ProfileEntryHookStub::Generate(MacroAssembler* masm) {
+  // Ecx is the only volatile register we must save.
+  __ push(ecx);
+
+  // Calculate and push the original stack pointer.
+  __ lea(eax, Operand(esp, kPointerSize));
+  __ push(eax);
+
+  // Calculate and push the function address.
+  __ mov(eax, Operand(eax, 0));
+  __ sub(eax, Immediate(Assembler::kCallInstructionLength));
+  __ push(eax);
+
+  // Call the entry hook.
+  int32_t hook_location = reinterpret_cast<int32_t>(&entry_hook_);
+  __ call(Operand(hook_location, RelocInfo::NONE));
+  __ add(esp, Immediate(2 * kPointerSize));
+
+  // Restore ecx.
+  __ pop(ecx);
   __ ret(0);
 }
 

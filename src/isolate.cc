@@ -477,6 +477,14 @@ void Isolate::Iterate(ObjectVisitor* v) {
   Iterate(v, current_t);
 }
 
+void Isolate::IterateDeferredHandles(ObjectVisitor* visitor) {
+  for (DeferredHandles* deferred = deferred_handles_head_;
+       deferred != NULL;
+       deferred = deferred->next_) {
+    deferred->Iterate(visitor);
+  }
+}
+
 
 void Isolate::RegisterTryCatchHandler(v8::TryCatch* that) {
   // The ARM simulator has a separate JS stack.  We therefore register
@@ -945,12 +953,9 @@ void Isolate::ScheduleThrow(Object* exception) {
   // When scheduling a throw we first throw the exception to get the
   // error reporting if it is uncaught before rescheduling it.
   Throw(exception);
-  PropagatePendingExceptionToExternalTryCatch();
-  if (has_pending_exception()) {
-    thread_local_top()->scheduled_exception_ = pending_exception();
-    thread_local_top()->external_caught_exception_ = false;
-    clear_pending_exception();
-  }
+  thread_local_top()->scheduled_exception_ = pending_exception();
+  thread_local_top()->external_caught_exception_ = false;
+  clear_pending_exception();
 }
 
 
@@ -1139,12 +1144,12 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
             "Extension or internal compilation error: %s in %s at line %d.\n",
             *String::cast(exception)->ToCString(),
             *String::cast(location->script()->name())->ToCString(),
-            line_number);
+            line_number + 1);
       } else {
         OS::PrintError(
             "Extension or internal compilation error in %s at line %d.\n",
             *String::cast(location->script()->name())->ToCString(),
-            line_number);
+            line_number + 1);
       }
     }
   }
@@ -1473,6 +1478,7 @@ Isolate::Isolate()
       descriptor_lookup_cache_(NULL),
       handle_scope_implementer_(NULL),
       unicode_cache_(NULL),
+      runtime_zone_(this),
       in_use_list_(0),
       free_list_(0),
       preallocated_storage_preallocated_(false),
@@ -1487,14 +1493,15 @@ Isolate::Isolate()
       regexp_stack_(NULL),
       date_cache_(NULL),
       observer_priority_(0),
-      context_exit_happened_(false) {
+      context_exit_happened_(false),
+      deferred_handles_head_(NULL),
+      optimizing_compiler_thread_(this) {
   TRACE_ISOLATE(constructor);
 
   memset(isolate_addresses_, 0,
       sizeof(isolate_addresses_[0]) * (kIsolateAddressCount + 1));
 
   heap_.isolate_ = this;
-  zone_.isolate_ = this;
   stack_guard_.isolate_ = this;
 
   // ThreadManager is initialized early to support locking an isolate
@@ -1569,6 +1576,8 @@ void Isolate::Deinit() {
   if (state_ == INITIALIZED) {
     TRACE_ISOLATE(deinit);
 
+    if (FLAG_parallel_recompilation) optimizing_compiler_thread_.Stop();
+
     if (FLAG_hydrogen_stats) HStatistics::Instance()->Print();
 
     // We must stop the logger before we tear down other components.
@@ -1635,7 +1644,7 @@ Isolate::~Isolate() {
   TRACE_ISOLATE(destructor);
 
   // Has to be called while counters_ are still alive.
-  zone_.DeleteKeptSegment();
+  runtime_zone_.DeleteKeptSegment();
 
   delete[] assembler_spare_buffer_;
   assembler_spare_buffer_ = NULL;
@@ -1775,10 +1784,8 @@ bool Isolate::Init(Deserializer* des) {
   ASSERT(Isolate::Current() == this);
   TRACE_ISOLATE(init);
 
-#ifdef DEBUG
   // The initialization process does not handle memory exhaustion.
   DisallowAllocationFailure disallow_allocation_failure;
-#endif
 
   InitializeLoggingAndCounters();
 
@@ -1810,7 +1817,7 @@ bool Isolate::Init(Deserializer* des) {
   global_handles_ = new GlobalHandles(this);
   bootstrapper_ = new Bootstrapper();
   handle_scope_implementer_ = new HandleScopeImplementer(this);
-  stub_cache_ = new StubCache(this, zone());
+  stub_cache_ = new StubCache(this, runtime_zone());
   regexp_stack_ = new RegExpStack();
   regexp_stack_->isolate_ = this;
   date_cache_ = new DateCache();
@@ -1890,7 +1897,7 @@ bool Isolate::Init(Deserializer* des) {
   heap_.SetStackLimits();
 
   // Quiet the heap NaN if needed on target platform.
-  if (create_heap_objects) Assembler::QuietNaN(heap_.nan_value());
+  if (!create_heap_objects) Assembler::QuietNaN(heap_.nan_value());
 
   deoptimizer_data_ = new DeoptimizerData;
   runtime_profiler_ = new RuntimeProfiler(this);
@@ -1913,6 +1920,7 @@ bool Isolate::Init(Deserializer* des) {
 
   state_ = INITIALIZED;
   time_millis_at_init_ = OS::TimeCurrentMillis();
+  if (FLAG_parallel_recompilation) optimizing_compiler_thread_.Start();
   return true;
 }
 
@@ -1993,6 +2001,36 @@ void Isolate::Exit() {
 
   // Reinit the current thread for the isolate it was running before this one.
   SetIsolateThreadLocals(previous_isolate, previous_thread_data);
+}
+
+
+void Isolate::LinkDeferredHandles(DeferredHandles* deferred) {
+  deferred->next_ = deferred_handles_head_;
+  if (deferred_handles_head_ != NULL) {
+    deferred_handles_head_->previous_ = deferred;
+  }
+  deferred_handles_head_ = deferred;
+}
+
+
+void Isolate::UnlinkDeferredHandles(DeferredHandles* deferred) {
+#ifdef DEBUG
+  // In debug mode assert that the linked list is well-formed.
+  DeferredHandles* deferred_iterator = deferred;
+  while (deferred_iterator->previous_ != NULL) {
+    deferred_iterator = deferred_iterator->previous_;
+  }
+  ASSERT(deferred_handles_head_ == deferred_iterator);
+#endif
+  if (deferred_handles_head_ == deferred) {
+    deferred_handles_head_ = deferred_handles_head_->next_;
+  }
+  if (deferred->next_ != NULL) {
+    deferred->next_->previous_ = deferred->previous_;
+  }
+  if (deferred->previous_ != NULL) {
+    deferred->previous_->next_ = deferred->next_;
+  }
 }
 
 

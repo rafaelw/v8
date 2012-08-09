@@ -118,14 +118,14 @@ class HBasicBlock: public ZoneObject {
 
   bool HasParentLoopHeader() const { return parent_loop_header_ != NULL; }
 
-  void SetJoinId(int ast_id);
+  void SetJoinId(BailoutId ast_id);
 
   void Finish(HControlInstruction* last);
   void FinishExit(HControlInstruction* instruction);
   void Goto(HBasicBlock* block, FunctionState* state = NULL);
 
   int PredecessorIndexOf(HBasicBlock* predecessor) const;
-  void AddSimulate(int ast_id) { AddInstruction(CreateSimulate(ast_id)); }
+  void AddSimulate(BailoutId ast_id) { AddInstruction(CreateSimulate(ast_id)); }
   void AssignCommonDominator(HBasicBlock* other);
   void AssignLoopSuccessorDominators();
 
@@ -168,7 +168,7 @@ class HBasicBlock: public ZoneObject {
   void RegisterPredecessor(HBasicBlock* pred);
   void AddDominatedBlock(HBasicBlock* block);
 
-  HSimulate* CreateSimulate(int ast_id);
+  HSimulate* CreateSimulate(BailoutId ast_id);
   HDeoptimize* CreateDeoptimize(HDeoptimize::UseEnvironment has_uses);
 
   int block_id_;
@@ -244,10 +244,11 @@ class HLoopInformation: public ZoneObject {
 class BoundsCheckTable;
 class HGraph: public ZoneObject {
  public:
-  HGraph(CompilationInfo* info, Zone* zone);
+  explicit HGraph(CompilationInfo* info);
 
   Isolate* isolate() { return isolate_; }
   Zone* zone() const { return zone_; }
+  CompilationInfo* info() const { return info_; }
 
   const ZoneList<HBasicBlock*>* blocks() const { return &blocks_; }
   const ZoneList<HPhi*>* phi_list() const { return phi_list_; }
@@ -280,8 +281,6 @@ class HGraph: public ZoneObject {
 
   void CollectPhis();
 
-  Handle<Code> Compile(CompilationInfo* info, Zone* zone);
-
   void set_undefined_constant(HConstant* constant) {
     undefined_constant_.set(constant);
   }
@@ -311,6 +310,8 @@ class HGraph: public ZoneObject {
     if (id >= 0 && id < values_.length()) return values_[id];
     return NULL;
   }
+
+  bool Optimize(SmartArrayPointer<char>* bailout_reason);
 
 #ifdef DEBUG
   void Verify(bool do_full_verify) const;
@@ -346,7 +347,9 @@ class HGraph: public ZoneObject {
 
  private:
   HConstant* GetConstant(SetOncePointer<HConstant>* pointer,
-                         Object* value);
+                         Handle<Object> value);
+  HConstant* GetConstantInt32(SetOncePointer<HConstant>* pointer,
+                              int32_t integer_value);
 
   void MarkAsDeoptimizingRecursively(HBasicBlock* block);
   void InsertTypeConversions(HInstruction* instr);
@@ -380,6 +383,7 @@ class HGraph: public ZoneObject {
   SetOncePointer<HBasicBlock> osr_loop_entry_;
   SetOncePointer<ZoneList<HUnknownOSRValue*> > osr_values_;
 
+  CompilationInfo* info_;
   Zone* zone_;
 
   bool is_recursive_;
@@ -427,8 +431,8 @@ class HEnvironment: public ZoneObject {
   int pop_count() const { return pop_count_; }
   int push_count() const { return push_count_; }
 
-  int ast_id() const { return ast_id_; }
-  void set_ast_id(int id) { ast_id_ = id; }
+  BailoutId ast_id() const { return ast_id_; }
+  void set_ast_id(BailoutId id) { ast_id_ = id; }
 
   int length() const { return values_.length(); }
   bool is_special_index(int i) const {
@@ -570,7 +574,7 @@ class HEnvironment: public ZoneObject {
   HEnvironment* outer_;
   int pop_count_;
   int push_count_;
-  int ast_id_;
+  BailoutId ast_id_;
   Zone* zone_;
 };
 
@@ -599,13 +603,13 @@ class AstContext {
   // Add a hydrogen instruction to the instruction stream (recording an
   // environment simulation if necessary) and then fill this context with
   // the instruction as value.
-  virtual void ReturnInstruction(HInstruction* instr, int ast_id) = 0;
+  virtual void ReturnInstruction(HInstruction* instr, BailoutId ast_id) = 0;
 
   // Finishes the current basic block and materialize a boolean for
   // value context, nothing for effect, generate a branch for test context.
   // Call this function in tail position in the Visit functions for
   // expressions.
-  virtual void ReturnControl(HControlInstruction* instr, int ast_id) = 0;
+  virtual void ReturnControl(HControlInstruction* instr, BailoutId ast_id) = 0;
 
   void set_for_typeof(bool for_typeof) { for_typeof_ = for_typeof; }
   bool is_for_typeof() { return for_typeof_; }
@@ -640,8 +644,8 @@ class EffectContext: public AstContext {
   virtual ~EffectContext();
 
   virtual void ReturnValue(HValue* value);
-  virtual void ReturnInstruction(HInstruction* instr, int ast_id);
-  virtual void ReturnControl(HControlInstruction* instr, int ast_id);
+  virtual void ReturnInstruction(HInstruction* instr, BailoutId ast_id);
+  virtual void ReturnControl(HControlInstruction* instr, BailoutId ast_id);
 };
 
 
@@ -653,8 +657,8 @@ class ValueContext: public AstContext {
   virtual ~ValueContext();
 
   virtual void ReturnValue(HValue* value);
-  virtual void ReturnInstruction(HInstruction* instr, int ast_id);
-  virtual void ReturnControl(HControlInstruction* instr, int ast_id);
+  virtual void ReturnInstruction(HInstruction* instr, BailoutId ast_id);
+  virtual void ReturnControl(HControlInstruction* instr, BailoutId ast_id);
 
   bool arguments_allowed() { return flag_ == ARGUMENTS_ALLOWED; }
 
@@ -667,17 +671,19 @@ class TestContext: public AstContext {
  public:
   TestContext(HGraphBuilder* owner,
               Expression* condition,
+              TypeFeedbackOracle* oracle,
               HBasicBlock* if_true,
               HBasicBlock* if_false)
       : AstContext(owner, Expression::kTest),
         condition_(condition),
+        oracle_(oracle),
         if_true_(if_true),
         if_false_(if_false) {
   }
 
   virtual void ReturnValue(HValue* value);
-  virtual void ReturnInstruction(HInstruction* instr, int ast_id);
-  virtual void ReturnControl(HControlInstruction* instr, int ast_id);
+  virtual void ReturnInstruction(HInstruction* instr, BailoutId ast_id);
+  virtual void ReturnControl(HControlInstruction* instr, BailoutId ast_id);
 
   static TestContext* cast(AstContext* context) {
     ASSERT(context->IsTest());
@@ -685,6 +691,7 @@ class TestContext: public AstContext {
   }
 
   Expression* condition() const { return condition_; }
+  TypeFeedbackOracle* oracle() const { return oracle_; }
   HBasicBlock* if_true() const { return if_true_; }
   HBasicBlock* if_false() const { return if_false_; }
 
@@ -694,6 +701,7 @@ class TestContext: public AstContext {
   void BuildBranch(HValue* value);
 
   Expression* condition_;
+  TypeFeedbackOracle* oracle_;
   HBasicBlock* if_true_;
   HBasicBlock* if_false_;
 };
@@ -830,7 +838,7 @@ class HGraphBuilder: public AstVisitor {
     BreakAndContinueScope* next_;
   };
 
-  HGraphBuilder(CompilationInfo* info, TypeFeedbackOracle* oracle, Zone* zone);
+  HGraphBuilder(CompilationInfo* info, TypeFeedbackOracle* oracle);
 
   HGraph* CreateGraph();
 
@@ -849,7 +857,7 @@ class HGraphBuilder: public AstVisitor {
 
   // Adding instructions.
   HInstruction* AddInstruction(HInstruction* instr);
-  void AddSimulate(int ast_id);
+  void AddSimulate(BailoutId ast_id);
 
   // Bailout environment manipulation.
   void Push(HValue* value) { environment()->Push(value); }
@@ -859,13 +867,19 @@ class HGraphBuilder: public AstVisitor {
 
   HBasicBlock* CreateJoin(HBasicBlock* first,
                           HBasicBlock* second,
-                          int join_id);
+                          BailoutId join_id);
 
   TypeFeedbackOracle* oracle() const { return function_state()->oracle(); }
 
   FunctionState* function_state() const { return function_state_; }
 
   void VisitDeclarations(ZoneList<Declaration*>* declarations);
+
+  void* operator new(size_t size, Zone* zone) {
+    return zone->New(static_cast<int>(size));
+  }
+  void operator delete(void* pointer, Zone* zone) { }
+  void operator delete(void* pointer) { }
 
  private:
   // Type of a member function that generates inline code for a native function.
@@ -972,9 +986,8 @@ class HGraphBuilder: public AstVisitor {
                        HBasicBlock* true_block,
                        HBasicBlock* false_block);
 
-  // Visit an argument subexpression and emit a push to the outgoing
-  // arguments.  Returns the hydrogen value that was pushed.
-  HValue* VisitArgument(Expression* expr);
+  // Visit an argument subexpression and emit a push to the outgoing arguments.
+  void VisitArgument(Expression* expr);
 
   void VisitArgumentList(ZoneList<Expression*>* arguments);
 
@@ -1023,14 +1036,15 @@ class HGraphBuilder: public AstVisitor {
   int InliningAstSize(Handle<JSFunction> target);
   bool TryInline(CallKind call_kind,
                  Handle<JSFunction> target,
-                 ZoneList<Expression*>* arguments,
+                 int arguments_count,
                  HValue* receiver,
-                 int ast_id,
-                 int return_id,
+                 BailoutId ast_id,
+                 BailoutId return_id,
                  ReturnHandlingFlag return_handling);
 
   bool TryInlineCall(Call* expr, bool drop_extra = false);
   bool TryInlineConstruct(CallNew* expr, HValue* receiver);
+  bool TryInlineGetter(Handle<JSFunction> getter, Property* prop);
   bool TryInlineBuiltinMethodCall(Call* expr,
                                   HValue* receiver,
                                   Handle<Map> receiver_map,
@@ -1047,7 +1061,7 @@ class HGraphBuilder: public AstVisitor {
   void HandleGlobalVariableAssignment(Variable* var,
                                       HValue* value,
                                       int position,
-                                      int ast_id);
+                                      BailoutId ast_id);
 
   void HandlePropertyAssignment(Assignment* expr);
   void HandleCompoundAssignment(Assignment* expr);
@@ -1079,25 +1093,24 @@ class HGraphBuilder: public AstVisitor {
                                      HValue* right);
   HInstruction* BuildIncrement(bool returns_original_input,
                                CountOperation* expr);
-  HLoadNamedField* BuildLoadNamedField(HValue* object,
-                                       Property* expr,
-                                       Handle<Map> type,
-                                       LookupResult* result,
-                                       bool smi_and_map_check);
-  HInstruction* BuildLoadNamedGeneric(HValue* object, Property* expr);
-  HInstruction* BuildLoadKeyedGeneric(HValue* object,
-                                      HValue* key);
-  HInstruction* BuildExternalArrayElementAccess(
-      HValue* external_elements,
-      HValue* checked_key,
-      HValue* val,
-      ElementsKind elements_kind,
-      bool is_store);
   HInstruction* BuildFastElementAccess(HValue* elements,
                                        HValue* checked_key,
                                        HValue* val,
+                                       HValue* dependency,
                                        ElementsKind elements_kind,
                                        bool is_store);
+
+  HInstruction* TryBuildConsolidatedElementLoad(HValue* object,
+                                                HValue* key,
+                                                HValue* val,
+                                                SmallMapList* maps);
+
+  HInstruction* BuildUncheckedMonomorphicElementAccess(HValue* object,
+                                                       HValue* key,
+                                                       HValue* val,
+                                                       HCheckMaps* mapcheck,
+                                                       Handle<Map> map,
+                                                       bool is_store);
 
   HInstruction* BuildMonomorphicElementAccess(HValue* object,
                                               HValue* key,
@@ -1105,11 +1118,12 @@ class HGraphBuilder: public AstVisitor {
                                               HValue* dependency,
                                               Handle<Map> map,
                                               bool is_store);
+
   HValue* HandlePolymorphicElementAccess(HValue* object,
                                          HValue* key,
                                          HValue* val,
                                          Expression* prop,
-                                         int ast_id,
+                                         BailoutId ast_id,
                                          int position,
                                          bool is_store,
                                          bool* has_side_effects);
@@ -1118,30 +1132,62 @@ class HGraphBuilder: public AstVisitor {
                                    HValue* key,
                                    HValue* val,
                                    Expression* expr,
-                                   int ast_id,
+                                   BailoutId ast_id,
                                    int position,
                                    bool is_store,
                                    bool* has_side_effects);
 
-  HInstruction* BuildLoadNamed(HValue* object,
-                               Property* prop,
-                               Handle<Map> map,
-                               Handle<String> name);
-  HInstruction* BuildStoreNamed(HValue* object,
-                                HValue* value,
-                                Expression* expr);
-  HInstruction* BuildStoreNamed(HValue* object,
-                                HValue* value,
-                                ObjectLiteral::Property* prop);
+  // Tries to find a JavaScript accessor of the given name in the prototype
+  // chain starting at the given map. Return true iff there is one, including
+  // the corresponding AccessorPair plus its holder (which could be null when
+  // the accessor is found directly in the given map).
+  bool LookupAccessorPair(Handle<Map> map,
+                          Handle<String> name,
+                          Handle<AccessorPair>* accessors,
+                          Handle<JSObject>* holder);
+
+  HLoadNamedField* BuildLoadNamedField(HValue* object,
+                                       Handle<Map> map,
+                                       LookupResult* result,
+                                       bool smi_and_map_check);
+  HInstruction* BuildLoadNamedGeneric(HValue* object,
+                                      Handle<String> name,
+                                      Property* expr);
+  HInstruction* BuildCallGetter(HValue* object,
+                                Handle<Map> map,
+                                Handle<AccessorPair> accessors,
+                                Handle<JSObject> holder);
+  HInstruction* BuildLoadNamedMonomorphic(HValue* object,
+                                          Handle<String> name,
+                                          Property* expr,
+                                          Handle<Map> map);
+  HInstruction* BuildLoadKeyedGeneric(HValue* object, HValue* key);
+  HInstruction* BuildExternalArrayElementAccess(
+      HValue* external_elements,
+      HValue* checked_key,
+      HValue* val,
+      HValue* dependency,
+      ElementsKind elements_kind,
+      bool is_store);
+
   HInstruction* BuildStoreNamedField(HValue* object,
                                      Handle<String> name,
                                      HValue* value,
-                                     Handle<Map> type,
+                                     Handle<Map> map,
                                      LookupResult* lookup,
                                      bool smi_and_map_check);
   HInstruction* BuildStoreNamedGeneric(HValue* object,
                                        Handle<String> name,
                                        HValue* value);
+  HInstruction* BuildCallSetter(HValue* object,
+                                HValue* value,
+                                Handle<Map> map,
+                                Handle<AccessorPair> accessors,
+                                Handle<JSObject> holder);
+  HInstruction* BuildStoreNamedMonomorphic(HValue* object,
+                                           Handle<String> name,
+                                           HValue* value,
+                                           Handle<Map> map);
   HInstruction* BuildStoreKeyedGeneric(HValue* object,
                                        HValue* key,
                                        HValue* value);
@@ -1150,7 +1196,7 @@ class HGraphBuilder: public AstVisitor {
 
   HInstruction* BuildThisFunction();
 
-  void AddCheckConstantFunction(Call* expr,
+  void AddCheckConstantFunction(Handle<JSObject> holder,
                                 HValue* receiver,
                                 Handle<Map> receiver_map,
                                 bool smi_and_map_check);

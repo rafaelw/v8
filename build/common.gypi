@@ -48,7 +48,8 @@
     # both for the snapshot and for the ARM target. Leaving the default value
     # of 'false' will avoid VFP instructions in the snapshot and use CPU feature
     # probing when running on the target.
-    'v8_can_use_vfp_instructions%': 'false',
+    'v8_can_use_vfp2_instructions%': 'false',
+    'v8_can_use_vfp3_instructions%': 'false',
 
     # Similar to vfp but on MIPS.
     'v8_can_use_fpu_instructions%': 'true',
@@ -132,9 +133,14 @@
               'CAN_USE_UNALIGNED_ACCESSES=0',
             ],
           }],
-          [ 'v8_can_use_vfp_instructions=="true"', {
+          [ 'v8_can_use_vfp2_instructions=="true"', {
             'defines': [
-              'CAN_USE_VFP_INSTRUCTIONS',
+              'CAN_USE_VFP2_INSTRUCTIONS',
+            ],
+          }],
+          [ 'v8_can_use_vfp3_instructions=="true"', {
+            'defines': [
+              'CAN_USE_VFP3_INSTRUCTIONS',
             ],
           }],
           [ 'v8_use_arm_eabi_hardfloat=="true"', {
@@ -159,12 +165,12 @@
           'V8_TARGET_ARCH_IA32',
         ],
       }],  # v8_target_arch=="ia32"
-      ['v8_target_arch=="mips"', {
+      ['v8_target_arch=="mipsel"', {
         'defines': [
           'V8_TARGET_ARCH_MIPS',
         ],
         'variables': {
-          'mipscompiler': '<!($(echo ${CXX:-$(which g++)}) -v 2>&1 | grep -q "^Target: mips-" && echo "yes" || echo "no")',
+          'mipscompiler': '<!($(echo ${CXX:-$(which g++)}) -v 2>&1 | grep -q "^Target: mips" && echo "yes" || echo "no")',
         },
         'conditions': [
           ['mipscompiler=="yes"', {
@@ -214,7 +220,7 @@
             'defines': ['_MIPS_ARCH_LOONGSON',],
           }],
         ],
-      }],  # v8_target_arch=="mips"
+      }],  # v8_target_arch=="mipsel"
       ['v8_target_arch=="x64"', {
         'defines': [
           'V8_TARGET_ARCH_X64',
@@ -273,13 +279,13 @@
       ['(OS=="linux" or OS=="freebsd" or OS=="openbsd" or OS=="solaris" \
          or OS=="netbsd" or OS=="mac" or OS=="android") and \
         (v8_target_arch=="arm" or v8_target_arch=="ia32" or \
-         v8_target_arch=="mips")', {
+         v8_target_arch=="mipsel")', {
         # Check whether the host compiler and target compiler support the
         # '-m32' option and set it if so.
         'target_conditions': [
           ['_toolset=="host"', {
             'variables': {
-              'm32flag': '<!((echo | $(echo ${CXX_host:-$(which g++)}) -m32 -E - > /dev/null 2>&1) && echo -n "-m32" || true)',
+              'm32flag': '<!((echo | $(echo ${CXX_host:-$(which g++)}) -m32 -E - > /dev/null 2>&1) && echo "-m32" || true)',
             },
             'cflags': [ '<(m32flag)' ],
             'ldflags': [ '<(m32flag)' ],
@@ -289,7 +295,7 @@
           }],
           ['_toolset=="target"', {
             'variables': {
-              'm32flag': '<!((echo | $(echo ${CXX_target:-${CXX:-$(which g++)}}) -m32 -E - > /dev/null 2>&1) && echo -n "-m32" || true)',
+              'm32flag': '<!((echo | $(echo ${CXX_target:-${CXX:-$(which g++)}}) -m32 -E - > /dev/null 2>&1) && echo "-m32" || true)',
             },
             'cflags': [ '<(m32flag)' ],
             'ldflags': [ '<(m32flag)' ],
@@ -348,7 +354,6 @@
             'cflags': [
               '-fdata-sections',
               '-ffunction-sections',
-              '-fomit-frame-pointer',
               '-O3',
             ],
             'conditions': [
@@ -378,14 +383,16 @@
                 'InlineFunctionExpansion': '2',
                 'EnableIntrinsicFunctions': 'true',
                 'FavorSizeOrSpeed': '0',
-                'OmitFramePointers': 'true',
                 'StringPooling': 'true',
-
                 'conditions': [
                   ['OS=="win" and component=="shared_library"', {
                     'RuntimeLibrary': '2',  #/MD
                   }, {
                     'RuntimeLibrary': '0',  #/MT
+                  }],
+                  ['v8_target_arch=="x64"', {
+                    # TODO(2207): remove this option once the bug is fixed.
+                    'WholeProgramOptimization': 'true',
                   }],
                 ],
               },

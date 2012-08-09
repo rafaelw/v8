@@ -510,6 +510,7 @@ class CpuFeatures : public AllStatic {
   static bool IsSupported(CpuFeature f) {
     ASSERT(initialized_);
     if (f == VFP3 && !FLAG_enable_vfp3) return false;
+    if (f == VFP2 && !FLAG_enable_vfp2) return false;
     return (supported_ & (1u << f)) != 0;
   }
 
@@ -535,6 +536,8 @@ class CpuFeatures : public AllStatic {
    public:
     explicit Scope(CpuFeature f) {
       unsigned mask = 1u << f;
+      // VFP2 and ARMv7 are implied by VFP3.
+      if (f == VFP3) mask |= 1u << VFP2 | 1u << ARMv7;
       ASSERT(CpuFeatures::IsSupported(f));
       ASSERT(!Serializer::enabled() ||
              (CpuFeatures::found_by_runtime_probing_ & mask) == 0);
@@ -644,6 +647,9 @@ class Assembler : public AssemblerBase {
 
   // Overrides the default provided by FLAG_debug_code.
   void set_emit_debug_code(bool value) { emit_debug_code_ = value; }
+
+  // Dummy for cross platform compatibility.
+  void set_predictable_code_size(bool value) { }
 
   // GetCode emits any pending (non-emitted) code and fills the descriptor
   // desc. GetCode() is idempotent; it returns the same result if no other
@@ -1203,17 +1209,17 @@ class Assembler : public AssemblerBase {
 
   // Record the AST id of the CallIC being compiled, so that it can be placed
   // in the relocation information.
-  void SetRecordedAstId(unsigned ast_id) {
-    ASSERT(recorded_ast_id_ == kNoASTId);
+  void SetRecordedAstId(TypeFeedbackId ast_id) {
+    ASSERT(recorded_ast_id_.IsNone());
     recorded_ast_id_ = ast_id;
   }
 
-  unsigned RecordedAstId() {
-    ASSERT(recorded_ast_id_ != kNoASTId);
+  TypeFeedbackId RecordedAstId() {
+    ASSERT(!recorded_ast_id_.IsNone());
     return recorded_ast_id_;
   }
 
-  void ClearRecordedAstId() { recorded_ast_id_ = kNoASTId; }
+  void ClearRecordedAstId() { recorded_ast_id_ = TypeFeedbackId::None(); }
 
   // Record a comment relocation entry that can be used by a disassembler.
   // Use --code-comments to enable.
@@ -1302,7 +1308,7 @@ class Assembler : public AssemblerBase {
   // Relocation for a type-recording IC has the AST id added to it.  This
   // member variable is a way to pass the information from the call site to
   // the relocation info.
-  unsigned recorded_ast_id_;
+  TypeFeedbackId recorded_ast_id_;
 
   bool emit_debug_code() const { return emit_debug_code_; }
 

@@ -1107,7 +1107,13 @@ class FixedArray(HeapObject):
     base_offset = self.ElementsOffset()
     for i in xrange(self.length):
       offset = base_offset + 4 * i
-      p.Print("[%08d] = %s" % (i, self.ObjectField(offset)))
+      try:
+        p.Print("[%08d] = %s" % (i, self.ObjectField(offset)))
+      except TypeError:
+        p.Dedent()
+        p.Print("...")
+        p.Print("}")
+        return
     p.Dedent()
     p.Print("}")
 
@@ -1521,6 +1527,24 @@ class InspectionShell(cmd.Cmd):
       raise NotImplementedError
     else:
       print "Page header is not available!"
+
+  def do_da(self, address):
+    """
+     Print ASCII string starting at specified address.
+    """
+    address = int(address, 16)
+    string = ""
+    while self.reader.IsValidAddress(address):
+      code = self.reader.ReadU8(address)
+      if code < 128:
+        string += chr(code)
+      else:
+        break
+      address += 1
+    if string == "":
+      print "Not an ASCII string at %s" % self.reader.FormatIntPtr(address)
+    else:
+      print "%s\n" % string
 
   def do_k(self, arguments):
     """

@@ -3533,23 +3533,23 @@ void TranscendentalCacheStub::Generate(MacroAssembler* masm) {
                                  1,
                                  1);
   } else {
-    if (!CpuFeatures::IsSupported(FPU)) UNREACHABLE();
+    ASSERT(CpuFeatures::IsSupported(FPU));
     CpuFeatures::Scope scope(FPU);
 
     Label no_update;
     Label skip_cache;
 
     // Call C function to calculate the result and update the cache.
-    // Register a0 holds precalculated cache entry address; preserve
-    // it on the stack and pop it into register cache_entry after the
-    // call.
-    __ Push(cache_entry, a2, a3);
+    // a0: precalculated cache entry address.
+    // a2 and a3: parts of the double value.
+    // Store a0, a2 and a3 on stack for later before calling C function.
+    __ Push(a3, a2, cache_entry);
     GenerateCallCFunction(masm, scratch0);
     __ GetCFunctionDoubleResult(f4);
 
     // Try to update the cache. If we cannot allocate a
     // heap number, we return the result without updating.
-    __ Pop(cache_entry, a2, a3);
+    __ Pop(a3, a2, cache_entry);
     __ LoadRoot(t1, Heap::kHeapNumberMapRootIndex);
     __ AllocateHeapNumber(t2, scratch0, scratch1, t1, &no_update);
     __ sdc1(f4, FieldMemOperand(t2, HeapNumber::kValueOffset));
@@ -4977,7 +4977,8 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 1);
   __ Addu(a2, a2, Operand(2));  // a2 was a smi.
   // Check that the static offsets vector buffer is large enough.
-  __ Branch(&runtime, hi, a2, Operand(OffsetsVector::kStaticOffsetsVectorSize));
+  __ Branch(
+      &runtime, hi, a2, Operand(Isolate::kJSRegexpStaticOffsetsVectorSize));
 
   // a2: Number of capture registers
   // regexp_data: RegExp data (FixedArray)
@@ -7763,6 +7764,66 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
                                  &slow_elements);
   __ Ret(USE_DELAY_SLOT);
   __ mov(v0, a0);
+}
+
+
+void ProfileEntryHookStub::MaybeCallEntryHook(MacroAssembler* masm) {
+  if (entry_hook_ != NULL) {
+    ProfileEntryHookStub stub;
+    __ push(ra);
+    __ CallStub(&stub);
+    __ pop(ra);
+  }
+}
+
+
+void ProfileEntryHookStub::Generate(MacroAssembler* masm) {
+  // The entry hook is a "push ra" instruction, followed by a call.
+  // Note: on MIPS "push" is 2 instruction
+  const int32_t kReturnAddressDistanceFromFunctionStart =
+      Assembler::kCallTargetAddressOffset + (2 * Assembler::kInstrSize);
+
+  // Save live volatile registers.
+  __ Push(ra, t1, a1);
+  const int32_t kNumSavedRegs = 3;
+
+  // Compute the function's address for the first argument.
+  __ Subu(a0, ra, Operand(kReturnAddressDistanceFromFunctionStart));
+
+  // The caller's return address is above the saved temporaries.
+  // Grab that for the second argument to the hook.
+  __ Addu(a1, sp, Operand(kNumSavedRegs * kPointerSize));
+
+  // Align the stack if necessary.
+  int frame_alignment = masm->ActivationFrameAlignment();
+  if (frame_alignment > kPointerSize) {
+    __ mov(t1, sp);
+    ASSERT(IsPowerOf2(frame_alignment));
+    __ And(sp, sp, Operand(-frame_alignment));
+  }
+
+#if defined(V8_HOST_ARCH_MIPS)
+  __ li(at, Operand(reinterpret_cast<int32_t>(&entry_hook_)));
+  __ lw(at, MemOperand(at));
+#else
+  // Under the simulator we need to indirect the entry hook through a
+  // trampoline function at a known address.
+  Address trampoline_address = reinterpret_cast<Address>(
+      reinterpret_cast<intptr_t>(EntryHookTrampoline));
+  ApiFunction dispatcher(trampoline_address);
+  __ li(at, Operand(ExternalReference(&dispatcher,
+                                      ExternalReference::BUILTIN_CALL,
+                                      masm->isolate())));
+#endif
+  __ Call(at);
+
+  // Restore the stack pointer if needed.
+  if (frame_alignment > kPointerSize) {
+    __ mov(sp, t1);
+  }
+
+  __ Pop(ra, t1, a1);
+  __ Ret();
 }
 
 

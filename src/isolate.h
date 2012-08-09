@@ -41,6 +41,7 @@
 #include "handles.h"
 #include "hashmap.h"
 #include "heap.h"
+#include "optimizing-compiler-thread.h"
 #include "regexp-stack.h"
 #include "runtime-profiler.h"
 #include "runtime.h"
@@ -307,7 +308,7 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #define ISOLATE_INIT_ARRAY_LIST(V)                                             \
   /* SerializerDeserializer state. */                                          \
-  V(int, jsregexp_static_offsets_vector, kJSRegexpStaticOffsetsVectorSize)     \
+  V(int32_t, jsregexp_static_offsets_vector, kJSRegexpStaticOffsetsVectorSize) \
   V(int, bad_char_shift_table, kUC16AlphabetSize)                              \
   V(int, good_suffix_shift_table, (kBMMaxShift + 1))                           \
   V(int, suffix_table, (kBMMaxShift + 1))                                      \
@@ -534,6 +535,11 @@ class Isolate {
   SaveContext* save_context() {return thread_local_top_.save_context_; }
   void set_save_context(SaveContext* save) {
     thread_local_top_.save_context_ = save;
+  }
+
+  // Access to the map of "new Object()".
+  Map* empty_object_map() {
+    return context()->global_context()->object_function()->map();
   }
 
   // Access to current thread id.
@@ -862,7 +868,7 @@ class Isolate {
     ASSERT(handle_scope_implementer_);
     return handle_scope_implementer_;
   }
-  Zone* zone() { return &zone_; }
+  Zone* runtime_zone() { return &runtime_zone_; }
 
   UnicodeCache* unicode_cache() {
     return unicode_cache_;
@@ -1062,6 +1068,14 @@ class Isolate {
     return observer_priority_++;
   }
 
+  void IterateDeferredHandles(ObjectVisitor* visitor);
+  void LinkDeferredHandles(DeferredHandles* deferred_handles);
+  void UnlinkDeferredHandles(DeferredHandles* deferred_handles);
+
+  OptimizingCompilerThread* optimizing_compiler_thread() {
+    return &optimizing_compiler_thread_;
+  }
+
  private:
   Isolate();
 
@@ -1212,7 +1226,7 @@ class Isolate {
   v8::ImplementationUtilities::HandleScopeData handle_scope_data_;
   HandleScopeImplementer* handle_scope_implementer_;
   UnicodeCache* unicode_cache_;
-  Zone zone_;
+  Zone runtime_zone_;
   PreallocatedStorage in_use_list_;
   PreallocatedStorage free_list_;
   bool preallocated_storage_preallocated_;
@@ -1286,8 +1300,13 @@ class Isolate {
 #undef ISOLATE_FIELD_OFFSET
 #endif
 
+  DeferredHandles* deferred_handles_head_;
+  OptimizingCompilerThread optimizing_compiler_thread_;
+
   friend class ExecutionAccess;
+  friend class HandleScopeImplementer;
   friend class IsolateInitializer;
+  friend class OptimizingCompilerThread;
   friend class ThreadManager;
   friend class Simulator;
   friend class StackGuard;

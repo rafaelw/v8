@@ -601,7 +601,7 @@ static void CompileScriptForTracker(Isolate* isolate, Handle<Script> script) {
   PostponeInterruptsScope postpone(isolate);
 
   // Build AST.
-  CompilationInfo info(script);
+  CompilationInfoWithZone info(script);
   info.MarkAsGlobal();
   // Parse and don't allow skipping lazy functions.
   if (ParserApi::Parse(&info, kNoParsingFlags)) {
@@ -894,7 +894,6 @@ class FunctionInfoListener {
 JSArray* LiveEdit::GatherCompileInfo(Handle<Script> script,
                                      Handle<String> source) {
   Isolate* isolate = Isolate::Current();
-  ZoneScope zone_scope(isolate, DELETE_ON_EXIT);
 
   FunctionInfoListener listener;
   Handle<Object> original_source = Handle<Object>(script->source());
@@ -966,12 +965,21 @@ class ReplacingVisitor : public ObjectVisitor {
 
 
 // Finds all references to original and replaces them with substitution.
-static void ReplaceCodeObject(Code* original, Code* substitution) {
-  ASSERT(!HEAP->InNewSpace(substitution));
+static void ReplaceCodeObject(Handle<Code> original,
+                              Handle<Code> substitution) {
+  // Perform a full GC in order to ensure that we are not in the middle of an
+  // incremental marking phase when we are replacing the code object.
+  // Since we are not in an incremental marking phase we can write pointers
+  // to code objects (that are never in new space) without worrying about
+  // write barriers.
+  HEAP->CollectAllGarbage(Heap::kMakeHeapIterableMask,
+                          "liveedit.cc ReplaceCodeObject");
+
+  ASSERT(!HEAP->InNewSpace(*substitution));
 
   AssertNoAllocation no_allocations_please;
 
-  ReplacingVisitor visitor(original, substitution);
+  ReplacingVisitor visitor(*original, *substitution);
 
   // Iterate over all roots. Stack frames may have pointer into original code,
   // so temporary replace the pointers with offset numbers
@@ -1067,8 +1075,8 @@ MaybeObject* LiveEdit::ReplaceFunctionCode(
 
   if (IsJSFunctionCode(shared_info->code())) {
     Handle<Code> code = compile_info_wrapper.GetFunctionCode();
-    ReplaceCodeObject(shared_info->code(), *code);
-    Handle<Object> code_scope_info =  compile_info_wrapper.GetCodeScopeInfo();
+    ReplaceCodeObject(Handle<Code>(shared_info->code()), code);
+    Handle<Object> code_scope_info = compile_info_wrapper.GetCodeScopeInfo();
     if (code_scope_info->IsFixedArray()) {
       shared_info->set_scope_info(ScopeInfo::cast(*code_scope_info));
     }
@@ -1310,7 +1318,7 @@ MaybeObject* LiveEdit::PatchFunctionPositions(
       // on stack (it is safe to substitute the code object on stack, because
       // we only change the structure of rinfo and leave instructions
       // untouched).
-      ReplaceCodeObject(info->code(), *patched_code);
+      ReplaceCodeObject(Handle<Code>(info->code()), patched_code);
     }
   }
 
@@ -1469,7 +1477,9 @@ static const char* DropFrames(Vector<StackFrame*> frames,
       isolate->builtins()->builtin(
           Builtins::kFrameDropper_LiveEdit)) {
     // OK, we can drop our own code.
-    *mode = Debug::FRAME_DROPPED_IN_DIRECT_CALL;
+    pre_top_frame = frames[top_frame_index - 2];
+    top_frame = frames[top_frame_index - 1];
+    *mode = Debug::CURRENTLY_SET_MODE;
     frame_has_padding = false;
   } else if (pre_top_frame_code ==
       isolate->builtins()->builtin(Builtins::kReturn_DebugBreak)) {
@@ -1483,6 +1493,15 @@ static const char* DropFrames(Vector<StackFrame*> frames,
     // We don't have a padding from 'debugger' statement call.
     // Here the stub is CEntry, it's not debug-only and can't be padded.
     // If anyone would complain, a proxy padded stub could be added.
+    frame_has_padding = false;
+  } else if (pre_top_frame->type() == StackFrame::ARGUMENTS_ADAPTOR) {
+    // This must be adaptor that remain from the frame dropping that
+    // is still on stack. A frame dropper frame must be above it.
+    ASSERT(frames[top_frame_index - 2]->LookupCode() ==
+        isolate->builtins()->builtin(Builtins::kFrameDropper_LiveEdit));
+    pre_top_frame = frames[top_frame_index - 3];
+    top_frame = frames[top_frame_index - 2];
+    *mode = Debug::CURRENTLY_SET_MODE;
     frame_has_padding = false;
   } else {
     return "Unknown structure of stack above changing function";
@@ -1594,7 +1613,7 @@ static const char* DropActivationsInActiveThreadImpl(
     TARGET& target, bool do_drop, Zone* zone) {
   Isolate* isolate = Isolate::Current();
   Debug* debug = isolate->debug();
-  ZoneScope scope(isolate, DELETE_ON_EXIT);
+  ZoneScope scope(zone, DELETE_ON_EXIT);
   Vector<StackFrame*> frames = CreateStackMap(zone);
 
 
@@ -1778,7 +1797,9 @@ Handle<JSArray> LiveEdit::CheckAndDropActivations(
 // means an error.
 class SingleFrameTarget {
  public:
-  explicit SingleFrameTarget(JavaScriptFrame* frame) : m_frame(frame) {}
+  explicit SingleFrameTarget(JavaScriptFrame* frame)
+      : m_frame(frame),
+        m_saved_status(LiveEdit::FUNCTION_AVAILABLE_FOR_PATCH) {}
 
   bool MatchActivation(StackFrame* frame,
       LiveEdit::FunctionPatchabilityStatus status) {
@@ -1805,7 +1826,14 @@ class SingleFrameTarget {
 const char* LiveEdit::RestartFrame(JavaScriptFrame* frame, Zone* zone) {
   SingleFrameTarget target(frame);
 
-  return DropActivationsInActiveThreadImpl(target, true, zone);
+  const char* result = DropActivationsInActiveThreadImpl(target, true, zone);
+  if (result != NULL) {
+    return result;
+  }
+  if (target.saved_status() == LiveEdit::FUNCTION_BLOCKED_UNDER_NATIVE_CODE) {
+    return "Function is blocked under native code";
+  }
+  return NULL;
 }
 
 
@@ -1859,7 +1887,8 @@ LiveEditFunctionTracker::~LiveEditFunctionTracker() {
 
 
 void LiveEditFunctionTracker::RecordFunctionInfo(
-    Handle<SharedFunctionInfo> info, FunctionLiteral* lit) {
+    Handle<SharedFunctionInfo> info, FunctionLiteral* lit,
+    Zone* zone) {
 }
 
 

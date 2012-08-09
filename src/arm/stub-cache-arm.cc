@@ -986,8 +986,8 @@ static void StoreIntAsFloat(MacroAssembler* masm,
                             Register fval,
                             Register scratch1,
                             Register scratch2) {
-  if (CpuFeatures::IsSupported(VFP3)) {
-    CpuFeatures::Scope scope(VFP3);
+  if (CpuFeatures::IsSupported(VFP2)) {
+    CpuFeatures::Scope scope(VFP2);
     __ vmov(s0, ival);
     __ add(scratch1, dst, Operand(wordoffset, LSL, 2));
     __ vcvt_f32_s32(s0, s0);
@@ -1230,6 +1230,42 @@ void StubCompiler::GenerateLoadConstant(Handle<JSObject> object,
 }
 
 
+void StubCompiler::GenerateDictionaryLoadCallback(Register receiver,
+                                                  Register name_reg,
+                                                  Register scratch1,
+                                                  Register scratch2,
+                                                  Register scratch3,
+                                                  Handle<AccessorInfo> callback,
+                                                  Handle<String> name,
+                                                  Label* miss) {
+  Register dictionary = scratch1;
+  Register index = scratch2;
+  __ ldr(dictionary, FieldMemOperand(receiver, JSObject::kPropertiesOffset));
+
+  // Probe the dictionary.
+  Label probe_done;
+  StringDictionaryLookupStub::GeneratePositiveLookup(masm(),
+                                                     miss,
+                                                     &probe_done,
+                                                     dictionary,
+                                                     name_reg,
+                                                     index,  // Set if we hit.
+                                                     scratch3);
+  __ bind(&probe_done);
+
+  // If probing finds an entry in the dictionary, check that the value is the
+  // callback.
+  const int kElementsStartOffset =
+      StringDictionary::kHeaderSize +
+      StringDictionary::kElementsStartIndex * kPointerSize;
+  const int kValueOffset = kElementsStartOffset + kPointerSize;
+  __ add(scratch1, dictionary, Operand(kValueOffset - kHeapObjectTag));
+  __ ldr(scratch3, MemOperand(scratch1, index, LSL, kPointerSizeLog2));
+  __ cmp(scratch3, Operand(callback));
+  __ b(ne, miss);
+}
+
+
 void StubCompiler::GenerateLoadCallback(Handle<JSObject> object,
                                         Handle<JSObject> holder,
                                         Register receiver,
@@ -1246,6 +1282,11 @@ void StubCompiler::GenerateLoadCallback(Handle<JSObject> object,
   // Check that the maps haven't changed.
   Register reg = CheckPrototypes(object, receiver, holder, scratch1,
                                  scratch2, scratch3, name, miss);
+
+  if (!holder->HasFastProperties() && !holder->IsJSGlobalObject()) {
+    GenerateDictionaryLoadCallback(
+        receiver, name_reg, scratch1, scratch2, scratch3, callback, name, miss);
+  }
 
   // Build AccessorInfo::args_ list on the stack and push property name below
   // the exit frame to make GC aware of them and store pointers to them.
@@ -1303,7 +1344,7 @@ void StubCompiler::GenerateLoadInterceptor(Handle<JSObject> object,
   // later.
   bool compile_followup_inline = false;
   if (lookup->IsFound() && lookup->IsCacheable()) {
-    if (lookup->type() == FIELD) {
+    if (lookup->IsField()) {
       compile_followup_inline = true;
     } else if (lookup->type() == CALLBACKS &&
                lookup->GetCallbackObject()->IsAccessorInfo()) {
@@ -1377,7 +1418,7 @@ void StubCompiler::GenerateLoadInterceptor(Handle<JSObject> object,
                                    miss);
     }
 
-    if (lookup->type() == FIELD) {
+    if (lookup->IsField()) {
       // We found FIELD property in prototype chain of interceptor's holder.
       // Retrieve a field from field's holder.
       GenerateFastPropertyLoad(masm(), r0, holder_reg,
@@ -1526,7 +1567,7 @@ Handle<Code> CallStubCompiler::CompileCallField(Handle<JSObject> object,
   GenerateMissBranch();
 
   // Return the generated code.
-  return GetCode(FIELD, name);
+  return GetCode(Code::FIELD, name);
 }
 
 
@@ -2071,7 +2112,7 @@ Handle<Code> CallStubCompiler::CompileStringFromCharCodeCall(
   GenerateMissBranch();
 
   // Return the generated code.
-  return cell.is_null() ? GetCode(function) : GetCode(NORMAL, name);
+  return cell.is_null() ? GetCode(function) : GetCode(Code::NORMAL, name);
 }
 
 
@@ -2089,11 +2130,11 @@ Handle<Code> CallStubCompiler::CompileMathFloorCall(
   //  -- sp[argc * 4]           : receiver
   // -----------------------------------
 
-  if (!CpuFeatures::IsSupported(VFP3)) {
+  if (!CpuFeatures::IsSupported(VFP2)) {
     return Handle<Code>::null();
   }
 
-  CpuFeatures::Scope scope_vfp3(VFP3);
+  CpuFeatures::Scope scope_vfp2(VFP2);
   const int argc = arguments().immediate();
   // If the object is not a JSObject or we got an unexpected number of
   // arguments, bail out to the regular call.
@@ -2217,7 +2258,7 @@ Handle<Code> CallStubCompiler::CompileMathFloorCall(
   GenerateMissBranch();
 
   // Return the generated code.
-  return cell.is_null() ? GetCode(function) : GetCode(NORMAL, name);
+  return cell.is_null() ? GetCode(function) : GetCode(Code::NORMAL, name);
 }
 
 
@@ -2316,7 +2357,7 @@ Handle<Code> CallStubCompiler::CompileMathAbsCall(
   GenerateMissBranch();
 
   // Return the generated code.
-  return cell.is_null() ? GetCode(function) : GetCode(NORMAL, name);
+  return cell.is_null() ? GetCode(function) : GetCode(Code::NORMAL, name);
 }
 
 
@@ -2533,7 +2574,7 @@ Handle<Code> CallStubCompiler::CompileCallInterceptor(Handle<JSObject> object,
   GenerateMissBranch();
 
   // Return the generated code.
-  return GetCode(INTERCEPTOR, name);
+  return GetCode(Code::INTERCEPTOR, name);
 }
 
 
@@ -2591,7 +2632,7 @@ Handle<Code> CallStubCompiler::CompileCallGlobal(
   GenerateMissBranch();
 
   // Return the generated code.
-  return GetCode(NORMAL, name);
+  return GetCode(Code::NORMAL, name);
 }
 
 
@@ -2619,7 +2660,9 @@ Handle<Code> StoreStubCompiler::CompileStoreField(Handle<JSObject> object,
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(transition.is_null() ? FIELD : MAP_TRANSITION, name);
+  return GetCode(transition.is_null()
+                 ? Code::FIELD
+                 : Code::MAP_TRANSITION, name);
 }
 
 
@@ -2664,14 +2707,15 @@ Handle<Code> StoreStubCompiler::CompileStoreCallback(
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
 Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
+    Handle<String> name,
     Handle<JSObject> receiver,
-    Handle<JSFunction> setter,
-    Handle<String> name) {
+    Handle<JSObject> holder,
+    Handle<JSFunction> setter) {
   // ----------- S t a t e -------------
   //  -- r0    : value
   //  -- r1    : receiver
@@ -2680,9 +2724,9 @@ Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
   // -----------------------------------
   Label miss;
 
-  // Check that the map of the object hasn't changed.
-  __ CheckMap(r1, r3, Handle<Map>(receiver->map()), &miss, DO_SMI_CHECK,
-              ALLOW_ELEMENT_TRANSITION_MAPS);
+  // Check that the maps haven't changed.
+  __ JumpIfSmi(r1, &miss);
+  CheckPrototypes(receiver, r1, holder, r3, r4, r5, name, &miss);
 
   {
     FrameScope scope(masm(), StackFrame::INTERNAL);
@@ -2690,7 +2734,7 @@ Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
     // Save value register, so we can restore it later.
     __ push(r0);
 
-    // Call the JavaScript getter with the receiver and the value on the stack.
+    // Call the JavaScript setter with the receiver and the value on the stack.
     __ Push(r1, r0);
     ParameterCount actual(1);
     __ InvokeFunction(setter, actual, CALL_FUNCTION, NullCallWrapper(),
@@ -2709,7 +2753,7 @@ Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -2754,7 +2798,7 @@ Handle<Code> StoreStubCompiler::CompileStoreInterceptor(
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(INTERCEPTOR, name);
+  return GetCode(Code::INTERCEPTOR, name);
 }
 
 
@@ -2800,7 +2844,7 @@ Handle<Code> StoreStubCompiler::CompileStoreGlobal(
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(NORMAL, name);
+  return GetCode(Code::NORMAL, name);
 }
 
 
@@ -2835,7 +2879,7 @@ Handle<Code> LoadStubCompiler::CompileLoadNonexistent(Handle<String> name,
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(NONEXISTENT, factory()->empty_string());
+  return GetCode(Code::NONEXISTENT, factory()->empty_string());
 }
 
 
@@ -2855,7 +2899,7 @@ Handle<Code> LoadStubCompiler::CompileLoadField(Handle<JSObject> object,
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(FIELD, name);
+  return GetCode(Code::FIELD, name);
 }
 
 
@@ -2876,7 +2920,7 @@ Handle<Code> LoadStubCompiler::CompileLoadCallback(
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -2914,7 +2958,7 @@ Handle<Code> LoadStubCompiler::CompileLoadViaGetter(
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -2934,7 +2978,7 @@ Handle<Code> LoadStubCompiler::CompileLoadConstant(Handle<JSObject> object,
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(CONSTANT_FUNCTION, name);
+  return GetCode(Code::CONSTANT_FUNCTION, name);
 }
 
 
@@ -2956,7 +3000,7 @@ Handle<Code> LoadStubCompiler::CompileLoadInterceptor(Handle<JSObject> object,
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(INTERCEPTOR, name);
+  return GetCode(Code::INTERCEPTOR, name);
 }
 
 
@@ -2998,7 +3042,7 @@ Handle<Code> LoadStubCompiler::CompileLoadGlobal(
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
-  return GetCode(NORMAL, name);
+  return GetCode(Code::NORMAL, name);
 }
 
 
@@ -3021,7 +3065,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadField(Handle<String> name,
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
-  return GetCode(FIELD, name);
+  return GetCode(Code::FIELD, name);
 }
 
 
@@ -3046,7 +3090,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadCallback(
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -3071,7 +3115,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadConstant(
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
   // Return the generated code.
-  return GetCode(CONSTANT_FUNCTION, name);
+  return GetCode(Code::CONSTANT_FUNCTION, name);
 }
 
 
@@ -3097,7 +3141,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadInterceptor(
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
-  return GetCode(INTERCEPTOR, name);
+  return GetCode(Code::INTERCEPTOR, name);
 }
 
 
@@ -3118,7 +3162,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadArrayLength(
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -3144,7 +3188,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadStringLength(
 
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -3169,7 +3213,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadFunctionPrototype(
   __ DecrementCounter(counters->keyed_load_function_prototype(), 1, r2, r3);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
-  return GetCode(CALLBACKS, name);
+  return GetCode(Code::CALLBACKS, name);
 }
 
 
@@ -3189,7 +3233,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadElement(
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(NORMAL, factory()->empty_string());
+  return GetCode(Code::NORMAL, factory()->empty_string());
 }
 
 
@@ -3217,7 +3261,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadPolymorphic(
   __ Jump(miss_ic, RelocInfo::CODE_TARGET, al);
 
   // Return the generated code.
-  return GetCode(NORMAL, factory()->empty_string(), MEGAMORPHIC);
+  return GetCode(Code::NORMAL, factory()->empty_string(), MEGAMORPHIC);
 }
 
 
@@ -3256,7 +3300,9 @@ Handle<Code> KeyedStoreStubCompiler::CompileStoreField(Handle<JSObject> object,
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(transition.is_null() ? FIELD : MAP_TRANSITION, name);
+  return GetCode(transition.is_null()
+                 ? Code::FIELD
+                 : Code::MAP_TRANSITION, name);
 }
 
 
@@ -3280,7 +3326,7 @@ Handle<Code> KeyedStoreStubCompiler::CompileStoreElement(
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
-  return GetCode(NORMAL, factory()->empty_string());
+  return GetCode(Code::NORMAL, factory()->empty_string());
 }
 
 
@@ -3319,7 +3365,7 @@ Handle<Code> KeyedStoreStubCompiler::CompileStorePolymorphic(
   __ Jump(miss_ic, RelocInfo::CODE_TARGET, al);
 
   // Return the generated code.
-  return GetCode(NORMAL, factory()->empty_string(), MEGAMORPHIC);
+  return GetCode(Code::NORMAL, factory()->empty_string(), MEGAMORPHIC);
 }
 
 
@@ -3549,8 +3595,8 @@ static void GenerateSmiKeyCheck(MacroAssembler* masm,
                                 Register scratch1,
                                 DwVfpRegister double_scratch0,
                                 Label* fail) {
-  if (CpuFeatures::IsSupported(VFP3)) {
-    CpuFeatures::Scope scope(VFP3);
+  if (CpuFeatures::IsSupported(VFP2)) {
+    CpuFeatures::Scope scope(VFP2);
     Label key_ok;
     // Check for smi or a smi inside a heap number.  We convert the heap
     // number and check if the conversion is exact and fits into the smi
@@ -3636,8 +3682,8 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       __ ldr(value, MemOperand(r3, key, LSL, 1));
       break;
     case EXTERNAL_FLOAT_ELEMENTS:
-      if (CpuFeatures::IsSupported(VFP3)) {
-        CpuFeatures::Scope scope(VFP3);
+      if (CpuFeatures::IsSupported(VFP2)) {
+        CpuFeatures::Scope scope(VFP2);
         __ add(r2, r3, Operand(key, LSL, 1));
         __ vldr(s0, r2, 0);
       } else {
@@ -3645,8 +3691,8 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       }
       break;
     case EXTERNAL_DOUBLE_ELEMENTS:
-      if (CpuFeatures::IsSupported(VFP3)) {
-        CpuFeatures::Scope scope(VFP3);
+      if (CpuFeatures::IsSupported(VFP2)) {
+        CpuFeatures::Scope scope(VFP2);
         __ add(r2, r3, Operand(key, LSL, 2));
         __ vldr(d0, r2, 0);
       } else {
@@ -3697,8 +3743,8 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
     // Now we can use r0 for the result as key is not needed any more.
     __ mov(r0, r5);
 
-    if (CpuFeatures::IsSupported(VFP3)) {
-      CpuFeatures::Scope scope(VFP3);
+    if (CpuFeatures::IsSupported(VFP2)) {
+      CpuFeatures::Scope scope(VFP2);
       __ vmov(s0, value);
       __ vcvt_f64_s32(d0, s0);
       __ sub(r3, r0, Operand(kHeapObjectTag));
@@ -3725,8 +3771,8 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
     // The test is different for unsigned int values. Since we need
     // the value to be in the range of a positive smi, we can't
     // handle either of the top two bits being set in the value.
-    if (CpuFeatures::IsSupported(VFP3)) {
-      CpuFeatures::Scope scope(VFP3);
+    if (CpuFeatures::IsSupported(VFP2)) {
+      CpuFeatures::Scope scope(VFP2);
       Label box_int, done;
       __ tst(value, Operand(0xC0000000));
       __ b(ne, &box_int);
@@ -3789,8 +3835,8 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
   } else if (elements_kind == EXTERNAL_FLOAT_ELEMENTS) {
     // For the floating-point array type, we need to always allocate a
     // HeapNumber.
-    if (CpuFeatures::IsSupported(VFP3)) {
-      CpuFeatures::Scope scope(VFP3);
+    if (CpuFeatures::IsSupported(VFP2)) {
+      CpuFeatures::Scope scope(VFP2);
       // Allocate a HeapNumber for the result. Don't use r0 and r1 as
       // AllocateHeapNumber clobbers all registers - also when jumping due to
       // exhausted young space.
@@ -3857,8 +3903,8 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       __ Ret();
     }
   } else if (elements_kind == EXTERNAL_DOUBLE_ELEMENTS) {
-    if (CpuFeatures::IsSupported(VFP3)) {
-      CpuFeatures::Scope scope(VFP3);
+    if (CpuFeatures::IsSupported(VFP2)) {
+      CpuFeatures::Scope scope(VFP2);
       // Allocate a HeapNumber for the result. Don't use r0 and r1 as
       // AllocateHeapNumber clobbers all registers - also when jumping due to
       // exhausted young space.
@@ -3983,7 +4029,7 @@ void KeyedStoreStubCompiler::GenerateStoreExternalArray(
       __ add(r3, r3, Operand(key, LSL, 2));
       // r3: effective address of the double element
       FloatingPointHelper::Destination destination;
-      if (CpuFeatures::IsSupported(VFP3)) {
+      if (CpuFeatures::IsSupported(VFP2)) {
         destination = FloatingPointHelper::kVFPRegisters;
       } else {
         destination = FloatingPointHelper::kCoreRegisters;
@@ -3993,7 +4039,7 @@ void KeyedStoreStubCompiler::GenerateStoreExternalArray(
           d0, r6, r7,  // These are: double_dst, dst1, dst2.
           r4, s2);  // These are: scratch2, single_scratch.
       if (destination == FloatingPointHelper::kVFPRegisters) {
-        CpuFeatures::Scope scope(VFP3);
+        CpuFeatures::Scope scope(VFP2);
         __ vstr(d0, r3, 0);
       } else {
         __ str(r6, MemOperand(r3, 0));
@@ -4028,8 +4074,8 @@ void KeyedStoreStubCompiler::GenerateStoreExternalArray(
     // The WebGL specification leaves the behavior of storing NaN and
     // +/-Infinity into integer arrays basically undefined. For more
     // reproducible behavior, convert these to zero.
-    if (CpuFeatures::IsSupported(VFP3)) {
-      CpuFeatures::Scope scope(VFP3);
+    if (CpuFeatures::IsSupported(VFP2)) {
+      CpuFeatures::Scope scope(VFP2);
 
       if (elements_kind == EXTERNAL_FLOAT_ELEMENTS) {
         // vldr requires offset to be a multiple of 4 so we can not

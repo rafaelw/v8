@@ -51,7 +51,6 @@ class ApiFunction;
 namespace internal {
 
 struct StatsCounter;
-const unsigned kNoASTId = -1;
 // -----------------------------------------------------------------------------
 // Platform independent assembler base class.
 

@@ -132,6 +132,12 @@ static Handle<Object> Invoke(bool is_construct,
         V8::FatalProcessOutOfMemory("JS", true);
       }
     }
+#ifdef ENABLE_DEBUGGER_SUPPORT
+    // Reset stepping state when script exits with uncaught exception.
+    if (isolate->debugger()->IsDebuggerActive()) {
+      isolate->debug()->ClearStepping();
+    }
+#endif  // ENABLE_DEBUGGER_SUPPORT
     return Handle<Object>();
   } else {
     isolate->clear_pending_message();
@@ -437,6 +443,25 @@ void StackGuard::RequestRuntimeProfilerTick() {
     }
     ExecutionAccess::Unlock(isolate_);
   }
+}
+
+
+void StackGuard::RequestCodeReadyEvent() {
+  ASSERT(FLAG_parallel_recompilation);
+  if (ExecutionAccess::TryLock(isolate_)) {
+    thread_local_.interrupt_flags_ |= CODE_READY;
+    if (thread_local_.postpone_interrupts_nesting_ == 0) {
+      thread_local_.jslimit_ = thread_local_.climit_ = kInterruptLimit;
+      isolate_->heap()->SetStackLimits();
+    }
+    ExecutionAccess::Unlock(isolate_);
+  }
+}
+
+
+bool StackGuard::IsCodeReadyEvent() {
+  ExecutionAccess access(isolate_);
+  return (thread_local_.interrupt_flags_ & CODE_READY) != 0;
 }
 
 
@@ -826,6 +851,11 @@ Object* Execution::DebugBreakHelper() {
     return isolate->heap()->undefined_value();
   }
 
+  // Ignore debug break if debugger is not active.
+  if (!isolate->debugger()->IsDebuggerActive()) {
+    return isolate->heap()->undefined_value();
+  }
+
   StackLimitCheck check(isolate);
   if (check.HasOverflowed()) {
     return isolate->heap()->undefined_value();
@@ -898,6 +928,17 @@ MaybeObject* Execution::HandleStackGuardInterrupt(Isolate* isolate) {
     isolate->heap()->CollectAllGarbage(Heap::kNoGCFlags,
                                        "StackGuard GC request");
     stack_guard->Continue(GC_REQUEST);
+  }
+
+  if (stack_guard->IsCodeReadyEvent()) {
+    ASSERT(FLAG_parallel_recompilation);
+    if (FLAG_trace_parallel_recompilation) {
+      PrintF("  ** CODE_READY event received.\n");
+    }
+    stack_guard->Continue(CODE_READY);
+  }
+  if (!stack_guard->IsTerminateExecution()) {
+    isolate->optimizing_compiler_thread()->InstallOptimizedFunctions();
   }
 
   isolate->counters()->stack_interrupts()->Increment();

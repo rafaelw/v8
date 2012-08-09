@@ -232,12 +232,6 @@ class Debug {
   void PreemptionWhileInDebugger();
   void Iterate(ObjectVisitor* v);
 
-  NO_INLINE(void PutValuesOnStackAndDie(int start,
-                                        Address c_entry_fp,
-                                        Address last_fp,
-                                        Address larger_fp,
-                                        int count,
-                                        int end));
   Object* Break(Arguments args);
   void SetBreakPoint(Handle<JSFunction> function,
                      Handle<Object> break_point_object,
@@ -446,7 +440,8 @@ class Debug {
     // The top JS frame had been calling some C++ function. The return address
     // gets patched automatically.
     FRAME_DROPPED_IN_DIRECT_CALL,
-    FRAME_DROPPED_IN_RETURN_CALL
+    FRAME_DROPPED_IN_RETURN_CALL,
+    CURRENTLY_SET_MODE
   };
 
   void FramesHaveBeenDropped(StackFrame::Id new_break_frame_id,

@@ -33,6 +33,7 @@
 #include "isolate.h"
 #include "compilation-cache.h"
 #include "execution.h"
+#include "objects.h"
 #include "snapshot.h"
 #include "platform.h"
 #include "utils.h"
@@ -2080,6 +2081,10 @@ THREADED_TEST(HiddenProperties) {
 
   HEAP->CollectAllGarbage(i::Heap::kNoGCFlags);
 
+  CHECK(obj->SetHiddenValue(key, Handle<Value>()));
+  CHECK(obj->GetHiddenValue(key).IsEmpty());
+
+  CHECK(obj->SetHiddenValue(key, v8::Integer::New(2002)));
   CHECK(obj->DeleteHiddenValue(key));
   CHECK(obj->GetHiddenValue(key).IsEmpty());
 }
@@ -3056,6 +3061,32 @@ TEST(APIThrowMessageOverwrittenToString) {
 }
 
 
+static void check_custom_error_message(
+    v8::Handle<v8::Message> message,
+    v8::Handle<v8::Value> data) {
+  const char* uncaught_error = "Uncaught MyError toString";
+  CHECK(message->Get()->Equals(v8_str(uncaught_error)));
+}
+
+
+TEST(CustomErrorToString) {
+  v8::HandleScope scope;
+  v8::V8::AddMessageListener(check_custom_error_message);
+  LocalContext context;
+  CompileRun(
+    "function MyError(name, message) {                   "
+    "  this.name = name;                                 "
+    "  this.message = message;                           "
+    "}                                                   "
+    "MyError.prototype = Object.create(Error.prototype); "
+    "MyError.prototype.toString = function() {           "
+    "  return 'MyError toString';                        "
+    "};                                                  "
+    "throw new MyError('my name', 'my message');         ");
+  v8::V8::RemoveMessageListeners(check_custom_error_message);
+}
+
+
 static void receive_message(v8::Handle<v8::Message> message,
                             v8::Handle<v8::Value> data) {
   message->Get();
@@ -3360,30 +3391,6 @@ THREADED_TEST(TryCatchAndFinally) {
       "  native_with_try_catch();\n"
       "}\n");
   CHECK(try_catch.HasCaught());
-}
-
-
-static void TryCatchNestedHelper(int depth) {
-  if (depth > 0) {
-    v8::TryCatch try_catch;
-    try_catch.SetVerbose(true);
-    TryCatchNestedHelper(depth - 1);
-    CHECK(try_catch.HasCaught());
-    try_catch.ReThrow();
-  } else {
-    v8::ThrowException(v8_str("back"));
-  }
-}
-
-
-TEST(TryCatchNested) {
-  v8::V8::Initialize();
-  v8::HandleScope scope;
-  LocalContext context;
-  v8::TryCatch try_catch;
-  TryCatchNestedHelper(5);
-  CHECK(try_catch.HasCaught());
-  CHECK_EQ(0, strcmp(*v8::String::Utf8Value(try_catch.Exception()), "back"));
 }
 
 
@@ -5242,7 +5249,7 @@ THREADED_TEST(IndependentHandleRevival) {
   object.MarkIndependent();
   HEAP->PerformScavenge();
   CHECK(revived);
-  HEAP->CollectAllGarbage(true);
+  HEAP->CollectAllGarbage(i::Heap::kAbortIncrementalMarkingMask);
   {
     v8::HandleScope handle_scope;
     v8::Local<String> y_str = v8_str("y");
@@ -5567,6 +5574,7 @@ THREADED_TEST(StringWrite) {
   v8::Handle<String> str = v8_str("abcde");
   // abc<Icelandic eth><Unicode snowman>.
   v8::Handle<String> str2 = v8_str("abc\303\260\342\230\203");
+  v8::Handle<String> str3 = v8::String::New("abc\0def", 7);
   const int kStride = 4;  // Must match stride in for loops in JS below.
   CompileRun(
       "var left = '';"
@@ -5777,6 +5785,28 @@ THREADED_TEST(StringWrite) {
   CHECK_NE(0, strcmp(utf8buf, "abc\303\260\342\230\203"));
   utf8buf[8] = '\0';
   CHECK_EQ(0, strcmp(utf8buf, "abc\303\260\342\230\203"));
+
+  memset(utf8buf, 0x1, sizeof(utf8buf));
+  utf8buf[5] = 'X';
+  len = str->WriteUtf8(utf8buf, sizeof(utf8buf), &charlen,
+                        String::NO_NULL_TERMINATION);
+  CHECK_EQ(5, len);
+  CHECK_EQ('X', utf8buf[5]);  // Test that the sixth character is untouched.
+  CHECK_EQ(5, charlen);
+  utf8buf[5] = '\0';
+  CHECK_EQ(0, strcmp(utf8buf, "abcde"));
+
+  memset(buf, 0x1, sizeof(buf));
+  len = str3->WriteAscii(buf);
+  CHECK_EQ(7, len);
+  CHECK_EQ(0, strcmp("abc def", buf));
+
+  memset(buf, 0x1, sizeof(buf));
+  len = str3->WriteAscii(buf, 0, -1, String::PRESERVE_ASCII_NULL);
+  CHECK_EQ(7, len);
+  CHECK_EQ(0, strcmp("abc", buf));
+  CHECK_EQ(0, buf[3]);
+  CHECK_EQ(0, strcmp("def", buf + 4));
 }
 
 
@@ -9394,7 +9424,8 @@ static void GenerateSomeGarbage() {
 v8::Handle<v8::Value> DirectApiCallback(const v8::Arguments& args) {
   static int count = 0;
   if (count++ % 3 == 0) {
-    HEAP->  CollectAllGarbage(true);  // This should move the stub
+    HEAP->CollectAllGarbage(i::Heap::kAbortIncrementalMarkingMask);
+        // This should move the stub
     GenerateSomeGarbage();  // This should ensure the old stub memory is flushed
   }
   return v8::Handle<v8::Value>();
@@ -9449,7 +9480,7 @@ THREADED_TEST(CallICFastApi_DirectCall_Throw) {
 v8::Handle<v8::Value> DirectGetterCallback(Local<String> name,
                                            const v8::AccessorInfo& info) {
   if (++p_getter_count % 3 == 0) {
-    HEAP->CollectAllGarbage(true);
+    HEAP->CollectAllGarbage(i::Heap::kAbortIncrementalMarkingMask);
     GenerateSomeGarbage();
   }
   return v8::Handle<v8::Value>();
@@ -10893,6 +10924,110 @@ THREADED_TEST(NestedHandleScopeAndContexts) {
   CHECK(!str.IsEmpty());
   env->Exit();
   env.Dispose();
+}
+
+
+static i::Handle<i::JSFunction>* foo_ptr = NULL;
+static int foo_count = 0;
+static i::Handle<i::JSFunction>* bar_ptr = NULL;
+static int bar_count = 0;
+
+
+static void entry_hook(uintptr_t function,
+                       uintptr_t return_addr_location) {
+  i::Code* code = i::Code::GetCodeFromTargetAddress(
+      reinterpret_cast<i::Address>(function));
+  CHECK(code != NULL);
+
+  if (bar_ptr != NULL && code == (*bar_ptr)->code())
+    ++bar_count;
+
+  if (foo_ptr != NULL && code == (*foo_ptr)->code())
+    ++foo_count;
+
+  // TODO(siggi): Verify return_addr_location.
+}
+
+
+static void RunLoopInNewEnv() {
+  bar_ptr = NULL;
+  foo_ptr = NULL;
+
+  v8::HandleScope outer;
+  v8::Persistent<Context> env = Context::New();
+  env->Enter();
+
+  const char* script =
+      "function bar() {"
+      "  var sum = 0;"
+      "  for (i = 0; i < 100; ++i)"
+      "    sum = foo(i);"
+      "  return sum;"
+      "}"
+      "function foo(i) { return i * i; }";
+  CompileRun(script);
+  i::Handle<i::JSFunction> bar =
+      i::Handle<i::JSFunction>::cast(
+          v8::Utils::OpenHandle(*env->Global()->Get(v8_str("bar"))));
+  ASSERT(*bar);
+
+  i::Handle<i::JSFunction> foo =
+      i::Handle<i::JSFunction>::cast(
+           v8::Utils::OpenHandle(*env->Global()->Get(v8_str("foo"))));
+  ASSERT(*foo);
+
+  bar_ptr = &bar;
+  foo_ptr = &foo;
+
+  v8::Handle<v8::Value> value = CompileRun("bar();");
+  CHECK(value->IsNumber());
+  CHECK_EQ(9801.0, v8::Number::Cast(*value)->Value());
+
+  // Test the optimized codegen path.
+  value = CompileRun("%OptimizeFunctionOnNextCall(foo);"
+                     "bar();");
+  CHECK(value->IsNumber());
+  CHECK_EQ(9801.0, v8::Number::Cast(*value)->Value());
+
+  env->Exit();
+}
+
+
+TEST(SetFunctionEntryHook) {
+  i::FLAG_allow_natives_syntax = true;
+
+  // Test setting and resetting the entry hook.
+  // Nulling it should always succeed.
+  CHECK(v8::V8::SetFunctionEntryHook(NULL));
+
+  CHECK(v8::V8::SetFunctionEntryHook(entry_hook));
+  // Setting a hook while one's active should fail.
+  CHECK_EQ(false, v8::V8::SetFunctionEntryHook(entry_hook));
+
+  CHECK(v8::V8::SetFunctionEntryHook(NULL));
+
+  // Reset the entry count to zero and set the entry hook.
+  bar_count = 0;
+  foo_count = 0;
+  CHECK(v8::V8::SetFunctionEntryHook(entry_hook));
+  RunLoopInNewEnv();
+
+  CHECK_EQ(2, bar_count);
+  CHECK_EQ(200, foo_count);
+
+  // Clear the entry hook and count.
+  bar_count = 0;
+  foo_count = 0;
+  v8::V8::SetFunctionEntryHook(NULL);
+
+  // Clear the compilation cache to make sure we don't reuse the
+  // functions from the previous invocation.
+  v8::internal::Isolate::Current()->compilation_cache()->Clear();
+
+  // Verify that entry hooking is now disabled.
+  RunLoopInNewEnv();
+  CHECK_EQ(0u, bar_count);
+  CHECK_EQ(0u, foo_count);
 }
 
 
@@ -14602,6 +14737,22 @@ static void SetterWhichSetsYOnThisTo23(Local<String> name,
 }
 
 
+Handle<Value> FooGetInterceptor(Local<String> name,
+                                const AccessorInfo& info) {
+  if (!name->Equals(v8_str("foo"))) return Handle<Value>();
+  return v8_num(42);
+}
+
+
+Handle<Value> FooSetInterceptor(Local<String> name,
+                                Local<Value> value,
+                                const AccessorInfo& info) {
+  if (!name->Equals(v8_str("foo"))) return Handle<Value>();
+  info.This()->Set(v8_str("y"), v8_num(23));
+  return v8_num(23);
+}
+
+
 TEST(SetterOnConstructorPrototype) {
   v8::HandleScope scope;
   Local<ObjectTemplate> templ = ObjectTemplate::New();
@@ -16120,7 +16271,8 @@ THREADED_TEST(Regress1516) {
     CHECK_LE(1, elements);
   }
 
-  i::Isolate::Current()->heap()->CollectAllGarbage(true);
+  i::Isolate::Current()->heap()->CollectAllGarbage(
+      i::Heap::kAbortIncrementalMarkingMask);
   { i::Object* raw_map_cache = i::Isolate::Current()->context()->map_cache();
     if (raw_map_cache != i::Isolate::Current()->heap()->undefined_value()) {
       i::MapCache* map_cache = i::MapCache::cast(raw_map_cache);
@@ -16834,4 +16986,132 @@ TEST(TryFinallyMessage) {
     CHECK(!message.IsEmpty());
     CHECK_EQ(6, message->GetLineNumber());
   }
+}
+
+
+static void Helper137002(bool do_store,
+                         bool polymorphic,
+                         bool remove_accessor,
+                         bool interceptor) {
+  LocalContext context;
+  Local<ObjectTemplate> templ = ObjectTemplate::New();
+  if (interceptor) {
+    templ->SetNamedPropertyHandler(FooGetInterceptor, FooSetInterceptor);
+  } else {
+    templ->SetAccessor(v8_str("foo"),
+                       GetterWhichReturns42,
+                       SetterWhichSetsYOnThisTo23);
+  }
+  context->Global()->Set(v8_str("obj"), templ->NewInstance());
+
+  // Turn monomorphic on slow object with native accessor, then turn
+  // polymorphic, finally optimize to create negative lookup and fail.
+  CompileRun(do_store ?
+             "function f(x) { x.foo = void 0; }" :
+             "function f(x) { return x.foo; }");
+  CompileRun("obj.y = void 0;");
+  if (!interceptor) {
+    CompileRun("%OptimizeObjectForAddingMultipleProperties(obj, 1);");
+  }
+  CompileRun("obj.__proto__ = null;"
+             "f(obj); f(obj); f(obj);");
+  if (polymorphic) {
+    CompileRun("f({});");
+  }
+  CompileRun("obj.y = void 0;"
+             "%OptimizeFunctionOnNextCall(f);");
+  if (remove_accessor) {
+    CompileRun("delete obj.foo;");
+  }
+  CompileRun("var result = f(obj);");
+  if (do_store) {
+    CompileRun("result = obj.y;");
+  }
+  if (remove_accessor && !interceptor) {
+    CHECK(context->Global()->Get(v8_str("result"))->IsUndefined());
+  } else {
+    CHECK_EQ(do_store ? 23 : 42,
+             context->Global()->Get(v8_str("result"))->Int32Value());
+  }
+}
+
+
+THREADED_TEST(Regress137002a) {
+  i::FLAG_allow_natives_syntax = true;
+  i::FLAG_compilation_cache = false;
+  v8::HandleScope scope;
+  for (int i = 0; i < 16; i++) {
+    Helper137002(i & 8, i & 4, i & 2, i & 1);
+  }
+}
+
+
+THREADED_TEST(Regress137002b) {
+  i::FLAG_allow_natives_syntax = true;
+  v8::HandleScope scope;
+  LocalContext context;
+  Local<ObjectTemplate> templ = ObjectTemplate::New();
+  templ->SetAccessor(v8_str("foo"),
+                     GetterWhichReturns42,
+                     SetterWhichSetsYOnThisTo23);
+  context->Global()->Set(v8_str("obj"), templ->NewInstance());
+
+  // Turn monomorphic on slow object with native accessor, then just
+  // delete the property and fail.
+  CompileRun("function load(x) { return x.foo; }"
+             "function store(x) { x.foo = void 0; }"
+             "function keyed_load(x, key) { return x[key]; }"
+             // Second version of function has a different source (add void 0)
+             // so that it does not share code with the first version.  This
+             // ensures that the ICs are monomorphic.
+             "function load2(x) { void 0; return x.foo; }"
+             "function store2(x) { void 0; x.foo = void 0; }"
+             "function keyed_load2(x, key) { void 0; return x[key]; }"
+
+             "obj.__proto__ = null;"
+             "var subobj = {};"
+             "subobj.__proto__ = obj;"
+             "%OptimizeObjectForAddingMultipleProperties(obj, 1);"
+
+             // Make the ICs monomorphic.
+             "load(obj); load(obj);"
+             "load2(subobj); load2(subobj);"
+             "store(obj);"
+             "store2(subobj);"
+             "keyed_load(obj, 'foo'); keyed_load(obj, 'foo');"
+             "keyed_load2(subobj, 'foo'); keyed_load2(subobj, 'foo');"
+
+             // Delete the accessor.  It better not be called any more now.
+             "delete obj.foo;"
+             "obj.y = void 0;"
+             "subobj.y = void 0;"
+
+             "var load_result = load(obj);"
+             "var load_result2 = load2(subobj);"
+             "var keyed_load_result = keyed_load(obj, 'foo');"
+             "var keyed_load_result2 = keyed_load2(subobj, 'foo');"
+             "store(obj);"
+             "store2(subobj);"
+             "var y_from_obj = obj.y;"
+             "var y_from_subobj = subobj.y;");
+  CHECK(context->Global()->Get(v8_str("load_result"))->IsUndefined());
+  CHECK(context->Global()->Get(v8_str("load_result2"))->IsUndefined());
+  CHECK(context->Global()->Get(v8_str("keyed_load_result"))->IsUndefined());
+  CHECK(context->Global()->Get(v8_str("keyed_load_result2"))->IsUndefined());
+  CHECK(context->Global()->Get(v8_str("y_from_obj"))->IsUndefined());
+  CHECK(context->Global()->Get(v8_str("y_from_subobj"))->IsUndefined());
+}
+
+
+THREADED_TEST(Regress137496) {
+  i::FLAG_expose_gc = true;
+  v8::HandleScope scope;
+  LocalContext context;
+
+  // Compile a try-finally clause where the finally block causes a GC
+  // while there still is a message pending for external reporting.
+  TryCatch try_catch;
+  try_catch.SetVerbose(true);
+  CompileRun("try { throw new Error(); } finally { gc(); }");
+  CHECK(try_catch.HasCaught());
 }

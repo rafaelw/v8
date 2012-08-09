@@ -116,11 +116,11 @@ class MacroAssembler: public Assembler {
   void Call(Address target, RelocInfo::Mode rmode, Condition cond = al);
   static int CallSize(Handle<Code> code,
                       RelocInfo::Mode rmode = RelocInfo::CODE_TARGET,
-                      unsigned ast_id = kNoASTId,
+                      TypeFeedbackId ast_id = TypeFeedbackId::None(),
                       Condition cond = al);
   void Call(Handle<Code> code,
             RelocInfo::Mode rmode = RelocInfo::CODE_TARGET,
-            unsigned ast_id = kNoASTId,
+            TypeFeedbackId ast_id = TypeFeedbackId::None(),
             Condition cond = al);
   void Ret(Condition cond = al);
 
@@ -1268,7 +1268,9 @@ class MacroAssembler: public Assembler {
                           DoubleRegister temp_double_reg);
 
 
-  void LoadInstanceDescriptors(Register map, Register descriptors);
+  void LoadInstanceDescriptors(Register map,
+                               Register descriptors,
+                               Register scratch);
 
   // Activation support.
   void EnterFrame(StackFrame::Type type);

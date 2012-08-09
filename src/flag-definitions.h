@@ -134,7 +134,7 @@ public:
 DEFINE_bool(use_strict, false, "enforce strict mode")
 DEFINE_bool(es5_readonly, false,
             "activate correct semantics for inheriting readonliness")
-DEFINE_bool(es52_globals, false,
+DEFINE_bool(es52_globals, true,
             "activate new semantics for global var declarations")
 
 DEFINE_bool(harmony_typeof, false, "enable harmony semantics for typeof")
@@ -152,7 +152,7 @@ DEFINE_implication(harmony, harmony_collections)
 DEFINE_implication(harmony_modules, harmony_scoping)
 
 // Flags for experimental implementation features.
-DEFINE_bool(packed_arrays, false, "optimizes arrays that have no holes")
+DEFINE_bool(packed_arrays, true, "optimizes arrays that have no holes")
 DEFINE_bool(smi_only_arrays, true, "tracks arrays with only smi values")
 DEFINE_bool(clever_optimizations,
             true,
@@ -198,9 +198,9 @@ DEFINE_bool(trap_on_deopt, false, "put a break point before deoptimizing")
 DEFINE_bool(deoptimize_uncommon_cases, true, "deoptimize uncommon cases")
 DEFINE_bool(polymorphic_inlining, true, "polymorphic inlining")
 DEFINE_bool(use_osr, true, "use on-stack replacement")
-DEFINE_bool(array_bounds_checks_elimination, false,
+DEFINE_bool(array_bounds_checks_elimination, true,
             "perform array bounds checks elimination")
-DEFINE_bool(array_index_dehoisting, false,
+DEFINE_bool(array_index_dehoisting, true,
             "perform array index dehoisting")
 
 DEFINE_bool(trace_osr, false, "trace on-stack replacement")
@@ -213,10 +213,17 @@ DEFINE_bool(cache_optimized_code, true,
             "cache optimized code for closures")
 DEFINE_bool(inline_construct, true, "inline constructor calls")
 DEFINE_bool(inline_arguments, true, "inline functions with arguments object")
+DEFINE_bool(inline_accessors, false, "inline JavaScript accessors")
 DEFINE_int(loop_weight, 1, "loop weight for representation inference")
 
 DEFINE_bool(optimize_for_in, true,
             "optimize functions containing for-in loops")
+
+DEFINE_bool(parallel_recompilation, false,
+            "optimizing hot functions asynchronously on a separate thread")
+DEFINE_bool(trace_parallel_recompilation, false, "track parallel recompilation")
+DEFINE_int(parallel_recompilation_queue_length, 2,
+           "the length of the parallel compilation queue")
 
 // Experimental profiler changes.
 DEFINE_bool(experimental_profiler, true, "enable all profiler experiments")
@@ -268,7 +275,9 @@ DEFINE_bool(enable_sahf, true,
             "enable use of SAHF instruction if available (X64 only)")
 DEFINE_bool(enable_vfp3, true,
             "enable use of VFP3 instructions if available - this implies "
-            "enabling ARMv7 instructions (ARM only)")
+            "enabling ARMv7 and VFP2 instructions (ARM only)")
+DEFINE_bool(enable_vfp2, true,
+            "enable use of VFP2 instructions if available")
 DEFINE_bool(enable_armv7, true,
             "enable use of ARMv7 instructions if available (ARM only)")
 DEFINE_bool(enable_fpu, true,
@@ -353,12 +362,17 @@ DEFINE_bool(trace_gc, false,
 DEFINE_bool(trace_gc_nvp, false,
             "print one detailed trace line in name=value format "
             "after each garbage collection")
+DEFINE_bool(trace_gc_ignore_scavenger, false,
+            "do not print trace line after scavenger collection")
 DEFINE_bool(print_cumulative_gc_stat, false,
             "print cumulative GC statistics in name=value format on exit")
 DEFINE_bool(trace_gc_verbose, false,
             "print more details following each garbage collection")
 DEFINE_bool(trace_fragmentation, false,
             "report fragmentation for old pointer and data pages")
+DEFINE_bool(trace_external_memory, false,
+            "print amount of external allocated memory after each time "
+            "it is adjusted.")
 DEFINE_bool(collect_maps, true,
             "garbage collect maps from which no objects can be reached")
 DEFINE_bool(flush_code, true,
@@ -367,6 +381,8 @@ DEFINE_bool(incremental_marking, true, "use incremental marking")
 DEFINE_bool(incremental_marking_steps, true, "do incremental marking steps")
 DEFINE_bool(trace_incremental_marking, false,
             "trace progress of the incremental marking")
+DEFINE_bool(track_gc_object_stats, false,
+            "track object counts and memory usage")
 
 // v8.cc
 DEFINE_bool(use_idle_notification, true,
@@ -407,6 +423,7 @@ DEFINE_bool(use_verbose_printer, true, "allows verbose printing")
 
 // parser.cc
 DEFINE_bool(allow_natives_syntax, false, "allow natives syntax")
+DEFINE_bool(trace_parse, false, "trace parsing and preparsing")
 
 // simulator-arm.cc and simulator-mips.cc
 DEFINE_bool(trace_sim, false, "Trace simulator execution")
@@ -541,6 +558,8 @@ DEFINE_bool(gc_verbose, false, "print stuff during garbage collection")
 DEFINE_bool(heap_stats, false, "report heap statistics before and after GC")
 DEFINE_bool(code_stats, false, "report code statistics after GC")
 DEFINE_bool(verify_heap, false, "verify heap pointers before and after GC")
+DEFINE_bool(verify_global_context_separation, false,
+            "verify that code holds on to at most one global context after GC")
 DEFINE_bool(print_handles, false, "report handles after GC")
 DEFINE_bool(print_global_handles, false, "report global handles after GC")
 

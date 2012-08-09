@@ -892,16 +892,6 @@ void Debug::Iterate(ObjectVisitor* v) {
 }
 
 
-void Debug::PutValuesOnStackAndDie(int start,
-                                   Address c_entry_fp,
-                                   Address last_fp,
-                                   Address larger_fp,
-                                   int count,
-                                   int end) {
-  OS::Abort();
-}
-
-
 Object* Debug::Break(Arguments args) {
   Heap* heap = isolate_->heap();
   HandleScope scope(isolate_);
@@ -999,41 +989,16 @@ Object* Debug::Break(Arguments args) {
         it.Advance();
       }
 
-      // Catch the cases that would lead to crashes and capture
-      // - C entry FP at which to start stack crawl.
-      // - FP of the frame at which we plan to stop stepping out (last FP).
-      // - current FP that's larger than last FP.
-      // - Counter for the number of steps to step out.
-      if (it.done()) {
-        // We crawled the entire stack, never reaching last_fp_.
-        PutValuesOnStackAndDie(0xBEEEEEEE,
-                               frame->fp(),
-                               thread_local_.last_fp_,
-                               NULL,
-                               count,
-                               0xFEEEEEEE);
-      } else if (it.frame()->fp() != thread_local_.last_fp_) {
-        // We crawled over last_fp_, without getting a match.
-        PutValuesOnStackAndDie(0xBEEEEEEE,
-                               frame->fp(),
-                               thread_local_.last_fp_,
-                               it.frame()->fp(),
-                               count,
-                               0xFEEEEEEE);
+      // Check that we indeed found the frame we are looking for.
+      CHECK(!it.done() && (it.frame()->fp() == thread_local_.last_fp_));
+      if (step_count > 1) {
+        // Save old count and action to continue stepping after StepOut.
+        thread_local_.queued_step_count_ = step_count - 1;
       }
 
-      // If we found original frame
-      if (it.frame()->fp() == thread_local_.last_fp_) {
-        if (step_count > 1) {
-          // Save old count and action to continue stepping after
-          // StepOut
-          thread_local_.queued_step_count_ = step_count - 1;
-        }
-
-        // Set up for StepOut to reach target frame
-        step_action = StepOut;
-        step_count = count;
-      }
+      // Set up for StepOut to reach target frame.
+      step_action = StepOut;
+      step_count = count;
     }
 
     // Clear all current stepping setup.
@@ -1840,7 +1805,7 @@ static bool CompileFullCodeForDebugging(Handle<JSFunction> function,
                                         Handle<Code> current_code) {
   ASSERT(!current_code->has_debug_break_slots());
 
-  CompilationInfo info(function);
+  CompilationInfoWithZone info(function);
   info.MarkCompilingForDebugging(current_code);
   ASSERT(!info.shared_info()->is_compiled());
   ASSERT(!info.isolate()->has_pending_exception());
@@ -2097,7 +2062,6 @@ void Debug::PrepareForBreakPoints() {
         // Try to compile the full code with debug break slots. If it
         // fails just keep the current code.
         Handle<Code> current_code(function->shared()->code());
-        ZoneScope zone_scope(isolate_, DELETE_ON_EXIT);
         shared->set_code(*lazy_compile);
         bool prev_force_debugger_active =
             isolate_->debugger()->force_debugger_active();
@@ -2318,7 +2282,9 @@ bool Debug::IsBreakAtReturn(JavaScriptFrame* frame) {
 void Debug::FramesHaveBeenDropped(StackFrame::Id new_break_frame_id,
                                   FrameDropMode mode,
                                   Object** restarter_frame_function_pointer) {
-  thread_local_.frame_drop_mode_ = mode;
+  if (mode != CURRENTLY_SET_MODE) {
+    thread_local_.frame_drop_mode_ = mode;
+  }
   thread_local_.break_frame_id_ = new_break_frame_id;
   thread_local_.restarter_frame_function_pointer_ =
       restarter_frame_function_pointer;
