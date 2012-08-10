@@ -8865,6 +8865,8 @@ class ObjectObservation {
   static void Observe(Isolate* isolate,
                       Handle<JSObject> object, Handle<JSObject> observer);
   static void Unobserve(Isolate* isolate, JSObject* object, JSObject* observer);
+  static void EnqueueObservationChange(Isolate* isolate, Handle<FixedArray> observers,
+                                       Handle<JSObject> change_record);
   static void EnqueueObservationChange(Isolate* isolate, Handle<JSObject> obj,
                                        Handle<String> name, Handle<String> type,
                                        Handle<Object> old_value);
