@@ -42,4 +42,16 @@ http://code.google.com/p/v8/wiki/BuildingWithGYP.
 
 Build instructions (Chromium)
 -----
-TODO
+Follow the normal [Chromium build instructions](http://dev.chromium.org/Home), but
+edit your .gclient file and add the following line to your "custom_deps"
+section:
+
+    "src/v8": None
+
+Then remove the old v8, clone this repo, rerun gclient, and build:
+
+    $ cd src
+    $ rm -rf v8
+    $ git clone git://github.com/rafaelw/v8.git
+    $ gclient runhooks
+    $ ninja -C out/Release chrome  # or whichever build system you use
