@@ -36,9 +36,6 @@
   obj.bar = 'bar';
   Object.deliverChangeRecords(obs);
   assertEquals(2, records.length);
-  assertTrue(Object.isFrozen(records[0]));
   assertEquals('foo', records[0].name);
-
-  assertTrue(Object.isFrozen(records[1]));
   assertEquals('bar', records[1].name);
 })()

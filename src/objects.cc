@@ -160,26 +160,23 @@ static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
   Handle<JSObject> record =
       factory->NewJSObject(isolate->object_function(), TENURED);
 
-  PropertyAttributes attr =
-      static_cast<PropertyAttributes>(DONT_DELETE | READ_ONLY);
-
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
       JSReceiver::SetProperty(
-          record, factory->object_symbol(), object, attr, kNonStrictMode));
+          record, factory->object_symbol(), object, NONE, kNonStrictMode));
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
       JSReceiver::SetProperty(
-          record, factory->name_symbol(), name, attr, kNonStrictMode));
+          record, factory->name_symbol(), name, NONE, kNonStrictMode));
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
       JSReceiver::SetProperty(
-          record, factory->type_symbol(), type, attr, kNonStrictMode));
+          record, factory->type_symbol(), type, NONE, kNonStrictMode));
   if (!old_value->IsTheHole()) {
     CHECK_NOT_EMPTY_HANDLE(
         isolate,
         JSReceiver::SetProperty(
-            record, factory->old_value_symbol(), old_value, attr,
+            record, factory->old_value_symbol(), old_value, NONE,
             kNonStrictMode));
   }
 
@@ -229,6 +226,7 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
   EnqueueObservationChange(isolate, obj, name, type, old_value);
 }
 
+// FIXME: Should take handles instead of raw pointers.
 void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
                                                  Handle<JSObject> object,
                                                  Handle<String> name,
@@ -240,21 +238,14 @@ void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
   if (observers->IsUndefined())
     return;
   Handle<FixedArray> observers_array(FixedArray::cast(observers));
-  EnqueueObservationChange(isolate, observers_array,
-                           CreateChangeRecord(isolate, object, name, type, old_value));
-}
-
-void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
-                                                 Handle<FixedArray> observers,
-                                                 Handle<JSObject> change_record) {
-  CHECK_NOT_EMPTY_HANDLE(
-      isolate,
-      JSObject::PreventExtensions(change_record));
-  for (int i = 0; i < observers->length(); ++i) {
-    if (observers->is_the_hole(i))
+  for (int i = 0; i < observers_array->length(); ++i) {
+    if (observers_array->is_the_hole(i))
       continue;
-    Handle<JSFunction> observer(JSFunction::cast(observers->get(i)));
-    AddRecordToObserver(isolate, observer, change_record);
+    Handle<JSFunction> observer(JSFunction::cast(observers_array->get(i)));
+    AddRecordToObserver(
+        isolate, observer,
+        CreateChangeRecord(
+            isolate, object, name, Handle<String>(type), old_value));
 
     if (!isolate->active_observers())
       isolate->set_active_observers(new ObserverList);

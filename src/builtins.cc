@@ -219,12 +219,6 @@ BUILTIN(ObjectNotifierNotify) {
     return heap->undefined_value();
   Handle<JSObject> target(JSObject::cast(raw_target));
 
-  Object* raw_observers = target->GetHiddenProperty(
-      heap->hidden_change_observers_symbol());
-  if (raw_observers->IsUndefined())
-    return heap->undefined_value();
-  Handle<FixedArray> observers(FixedArray::cast(raw_observers));
-
   Handle<String> type_sym = factory->LookupAsciiSymbol("type");
   Handle<String> type;
   {
@@ -242,14 +236,31 @@ BUILTIN(ObjectNotifierNotify) {
         "illegal_invocation", HandleVector<Object>(NULL, 0)));
   }
 
-  // FIXME: Should be freezing record here.
-  Handle<JSObject> new_record = Copy(record_arg);
-  SetProperty(new_record, isolate->factory()->object_symbol(),
-              target, static_cast<PropertyAttributes>(DONT_DELETE | READ_ONLY),
-              kNonStrictMode);
+  Handle<String> name;
+  Handle<Object> old_value(heap->the_hole_value());
+  // FIXME: Rather than pulling out these three symbols, should just iterate
+  // over all enumerable properties (exception 'object') in the passed-in
+  // record.
+  {
+    LookupResult result(isolate);
+    record_arg->Lookup(heap->name_symbol(), &result);
+    if (result.IsFound()) {
+      Object* obj = result.GetLazyValue();
+      if (obj->IsString())
+        name = Handle<String>(String::cast(obj));
+    }
+  }
 
+  {
+    LookupResult result(isolate);
+    record_arg->Lookup(heap->old_value_symbol(), &result);
+    if (result.IsFound())
+      old_value = Handle<Object>(result.GetLazyValue());
+  }
+
+  // FIXME: Should be enumerating over the passed-in changeRecord
   ObjectObservation::EnqueueObservationChange(
-      isolate, observers, new_record);
+      isolate, target, name, type, old_value);
 
   return isolate->heap()->undefined_value();
 }
