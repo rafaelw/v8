@@ -55,3 +55,7 @@ Then remove the old v8, clone this repo, rerun gclient, and build:
     $ git clone git://github.com/rafaelw/v8.git
     $ gclient runhooks
     $ ninja -C out/Release chrome  # or whichever build system you use
+
+Feedback
+-----
+The point of this implementation is to allow JavaScript developers to experiment with the feature and provide feedback in advance of the feature being included in the specification. Please provide feedback to the [es-discuss mailing list](https://mail.mozilla.org/listinfo/es-discuss/). The email to es-discuss announcing the availability of this implementation is [here](https://mail.mozilla.org/pipermail/es-discuss/2012-August/024547.html).
