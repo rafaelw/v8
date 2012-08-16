@@ -87,6 +87,19 @@ static void AddObserverPriorityIfNeeded(Isolate* isolate, Handle<JSObject> obser
           Handle<Object>(Smi::FromInt(isolate->observer_priority()))));
 }
 
+static void EnsureObserverInitialized(Isolate* isolate,
+                                      Handle<JSObject> observer) {
+  AddObserverPriorityIfNeeded(isolate, observer);
+  // Create the identity hash for later use
+  CHECK(JSObject::GetIdentityHash(observer));
+}
+
+static bool IsObserver(JSObject* observer) {
+  return observer->GetHiddenProperty(
+      observer->GetHeap()->hidden_observer_priority_symbol())
+      ->IsSmi();
+}
+
 static inline int GetObserverPriority(Isolate* isolate, JSObject* observer) {
   return Smi::cast(observer->GetHiddenProperty(
       isolate->heap()->hidden_observer_priority_symbol()))->value();
@@ -96,15 +109,15 @@ void ObjectObservation::Observe(Isolate* isolate,
                                 Handle<JSObject> object,
                                 Handle<JSObject> observer) {
   HandleScope scope(isolate);
-  AddObserverPriorityIfNeeded(isolate, observer);
-  String* key = isolate->heap()->hidden_change_observers_symbol();
-  Object* observers = object->GetHiddenProperty(key);
+  EnsureObserverInitialized(isolate, observer);
+  Handle<String> key = isolate->factory()->hidden_change_observers_symbol();
+  Object* observers = object->GetHiddenProperty(*key);
   if (observers->IsUndefined()) {
     Handle<FixedArray> observers_array = isolate->factory()->NewFixedArray(1);
     observers_array->set(0, *observer);
     CHECK_NOT_EMPTY_HANDLE(
         isolate,
-        JSObject::SetHiddenProperty(object, Handle<String>(key), observers_array));
+        JSObject::SetHiddenProperty(object, key, observers_array));
     return;
   }
   Handle<FixedArray> observer_array(FixedArray::cast(observers));
@@ -127,7 +140,7 @@ void ObjectObservation::Observe(Isolate* isolate,
   new_array->set(length, *observer);
   CHECK_NOT_EMPTY_HANDLE(
       isolate,
-      JSObject::SetHiddenProperty(object, Handle<String>(key), new_array));
+      JSObject::SetHiddenProperty(object, key, new_array));
 }
 
 void ObjectObservation::Unobserve(Isolate* isolate,
@@ -148,119 +161,92 @@ void ObjectObservation::Unobserve(Isolate* isolate,
   }
 }
 
-static Handle<JSObject> CreateChangeRecord(Isolate* isolate,
-                                           Handle<Object> object,
-                                           Handle<Object> name,
-                                           Handle<String> type,
-                                           Handle<Object> old_value) {
-  HandleScope scope(isolate);
+struct ChangeRecord {
+  Object** object;
+  Object** name;
+  Object** type;
+  Object** old_value;
+};
 
-  Factory* factory = isolate->factory();
+static ChangeRecord CreateChangeRecord(Isolate* isolate,
+                                       Object* object,
+                                       Object* name,
+                                       String* type,
+                                       Object* old_value) {
+  ChangeRecord record = {
+      isolate->global_handles()->Create(object).location(),
+      isolate->global_handles()->Create(name).location(),
+      isolate->global_handles()->Create(type).location(),
+      old_value->IsTheHole()
+          ? NULL : isolate->global_handles()->Create(old_value).location()
+  };
+  return record;
+}
 
-  Handle<JSObject> record =
-      factory->NewJSObject(isolate->object_function(), TENURED);
+typedef List<ChangeRecord> ChangeRecordList;
 
-  CHECK_NOT_EMPTY_HANDLE(
-      isolate,
-      JSReceiver::SetProperty(
-          record, factory->object_symbol(), object, NONE, kNonStrictMode));
-  CHECK_NOT_EMPTY_HANDLE(
-      isolate,
-      JSReceiver::SetProperty(
-          record, factory->name_symbol(), name, NONE, kNonStrictMode));
-  CHECK_NOT_EMPTY_HANDLE(
-      isolate,
-      JSReceiver::SetProperty(
-          record, factory->type_symbol(), type, NONE, kNonStrictMode));
-  if (!old_value->IsTheHole()) {
-    CHECK_NOT_EMPTY_HANDLE(
-        isolate,
-        JSReceiver::SetProperty(
-            record, factory->old_value_symbol(), old_value, NONE,
-            kNonStrictMode));
-  }
+static bool HandlesMatch(void* key1, void* key2) {
+  return *reinterpret_cast<Object**>(key1) ==
+      *reinterpret_cast<Object**>(key2);
+}
 
-  return scope.CloseAndEscape(record);
+static uint32_t ObjectHash(JSObject* key) {
+  ASSERT(IsObserver(key));
+  MaybeObject* maybe_hash = key->GetIdentityHash(OMIT_CREATION);
+  return static_cast<uint32_t>(
+      Smi::cast(maybe_hash->ToObjectUnchecked())->value());
 }
 
 static void AddRecordToObserver(Isolate* isolate,
-                                Handle<JSFunction> observer,
-                                Handle<JSObject> change_record) {
-  String* records_key = isolate->heap()->hidden_change_records_symbol();
-  Object* records = observer->GetHiddenProperty(records_key);
-  if (!records || records->IsUndefined()) {
-    Handle<JSArray> records_array = isolate->factory()->NewJSArray(1);
-    CHECK_NOT_EMPTY_HANDLE(
-        isolate,
-        JSObject::SetElement(records_array, 0, change_record, NONE,
-                             kNonStrictMode));
-    CHECK_NOT_EMPTY_HANDLE(
-        isolate,
-        JSObject::SetHiddenProperty(observer, Handle<String>(records_key), records_array));
-    return;
+                                JSFunction* observer,
+                                const ChangeRecord& change_record) {
+  ASSERT(isolate->observer_records_map());
+  ASSERT(IsObserver(observer));
+  HashMap::Entry* entry = isolate->observer_records_map()->Lookup(
+      &observer, ObjectHash(observer), false);
+  if (!entry) {
+    Handle<Object> global_handle = isolate->global_handles()->Create(observer);
+    entry = isolate->observer_records_map()->Lookup(global_handle.location(),
+        ObjectHash(JSObject::cast(*global_handle)), true);
+    ASSERT(!entry->value);
+    entry->value = new ChangeRecordList(1);
   }
-  Handle<JSArray> records_array(JSArray::cast(records));
-  CHECK_NOT_EMPTY_HANDLE(
-      isolate,
-      JSObject::SetElement(records_array,
-                           Smi::cast(records_array->length())->value(),
-                           change_record, NONE, kNonStrictMode));
-}
-
-static inline bool IsActiveObserver(Isolate* isolate, JSFunction* observer) {
-  if (!isolate->active_observers())
-    return false;
-  for (int i = 0; i < isolate->active_observers()->length(); ++i) {
-    if (*isolate->active_observers()->at(i).observer == observer)
-      return true;
-  }
-  return false;
+  ChangeRecordList* record_list = reinterpret_cast<ChangeRecordList*>(
+      entry->value);
+  record_list->Add(change_record);
 }
 
 void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
-                                                 Handle<JSObject> obj,
-                                                 uint32_t index,
-                                                 Handle<String> type,
-                                                 Handle<Object> old_value) {
-  Handle<String> name = isolate->factory()->Uint32ToString(index);
-  EnqueueObservationChange(isolate, obj, name, type, old_value);
-}
-
-// FIXME: Should take handles instead of raw pointers.
-void ObjectObservation::EnqueueObservationChange(Isolate* isolate,
-                                                 Handle<JSObject> object,
-                                                 Handle<String> name,
-                                                 Handle<String> type,
-                                                 Handle<Object> old_value) {
+                                                 JSObject* object,
+                                                 Object* name,
+                                                 String* type,
+                                                 Object* old_value) {
   HandleScope scope(isolate);
   Object* observers = object->GetHiddenProperty(
       isolate->heap()->hidden_change_observers_symbol());
   if (observers->IsUndefined())
     return;
-  Handle<FixedArray> observers_array(FixedArray::cast(observers));
+  FixedArray* observers_array = FixedArray::cast(observers);
   for (int i = 0; i < observers_array->length(); ++i) {
     if (observers_array->is_the_hole(i))
       continue;
-    Handle<JSFunction> observer(JSFunction::cast(observers_array->get(i)));
+    JSFunction* observer = JSFunction::cast(observers_array->get(i));
+    if (!isolate->observer_records_map())
+      isolate->set_observer_records_map(new HashMap(HandlesMatch));
+
     AddRecordToObserver(
         isolate, observer,
         CreateChangeRecord(
-            isolate, object, name, Handle<String>(type), old_value));
+            isolate, object, name, type, old_value));
 
-    if (!isolate->active_observers())
-      isolate->set_active_observers(new ObserverList);
-
-    if (!IsActiveObserver(isolate, *observer)) {
-      Handle<Object> global_handle =
-          isolate->global_handles()->Create(*observer);
-      ObserverWithPriority owp = {
-        Handle<JSFunction>::cast(global_handle),
-        GetObserverPriority(isolate, *observer)
-      };
-      isolate->active_observers()->Add(owp);
-    }
   }
 }
+
+struct ObserverWithPriority {
+  Handle<JSFunction> observer;
+  ChangeRecordList* records;
+  int priority;
+};
 
 static int SortByPriority(const ObserverWithPriority* a,
                           const ObserverWithPriority* b) {
@@ -269,15 +255,60 @@ static int SortByPriority(const ObserverWithPriority* a,
 }
 
 static void DeliverChangeRecordsHelper(Isolate* isolate,
-                                       Handle<JSFunction> observer) {
+                                       Handle<JSFunction> observer,
+                                       ChangeRecordList* records) {
   HandleScope scope(isolate);
-  String* records_key = isolate->heap()->hidden_change_records_symbol();
-  Object* records = observer->GetHiddenProperty(records_key);
-  ASSERT(!records->IsUndefined());
-  ASSERT(records->IsJSArray());
-  ASSERT(JSArray::cast(records)->length());
-  Handle<Object> args[] = { Handle<Object>(records) };
-  observer->DeleteHiddenProperty(records_key);
+  Handle<FixedArray> records_fixed_array =
+      isolate->factory()->NewFixedArray(records->length());
+  PropertyAttributes attr =
+      static_cast<PropertyAttributes>(DONT_DELETE | READ_ONLY);
+  for (int i = 0; i < records->length(); ++i) {
+    const ChangeRecord& record = records->at(i);
+    // FIXME: Should share records between observers.
+    Handle<JSObject> js_record = isolate->factory()->NewJSObject(
+        isolate->object_function());
+    JSObject::SetProperty(
+        js_record,
+        isolate->factory()->object_symbol(),
+        Handle<Object>(record.object),
+        attr,
+        kNonStrictMode);
+    JSObject::SetProperty(
+        js_record,
+        isolate->factory()->type_symbol(),
+        Handle<Object>(record.type),
+        attr,
+        kNonStrictMode);
+    Handle<Object> name(record.name);
+    if (name->IsNumber())
+      name = isolate->factory()->NumberToString(name);
+    ASSERT(name->IsString());
+    JSObject::SetProperty(
+        js_record,
+        isolate->factory()->name_symbol(),
+        name,
+        attr,
+        kNonStrictMode);
+    if (record.old_value) {
+      JSObject::SetProperty(
+         js_record,
+         isolate->factory()->old_value_symbol(),
+         Handle<Object>(record.old_value),
+         attr,
+         kNonStrictMode);
+    }
+    JSObject::PreventExtensions(js_record);
+    records_fixed_array->set(i, *js_record);
+
+    isolate->global_handles()->Destroy(record.object);
+    isolate->global_handles()->Destroy(record.name);
+    isolate->global_handles()->Destroy(record.type);
+    if (record.old_value)
+      isolate->global_handles()->Destroy(record.old_value);
+  }
+  Handle<JSArray> js_records =
+      isolate->factory()->NewJSArrayWithElements(records_fixed_array);
+  Handle<Object> args[] = { js_records };
 
   Handle<Object> this_handle(isolate->heap()->undefined_value());
   v8::TryCatch catcher;
@@ -294,23 +325,26 @@ static void DeliverChangeRecordsHelper(Isolate* isolate,
 
 void ObjectObservation::DeliverChangeRecords(Isolate* isolate,
                                              Handle<JSFunction> observer) {
-  ObserverList* active_observers = isolate->active_observers();
-  if (!active_observers)
+  if (!IsObserver(*observer))
     return;
-  for (int i = 0; i < active_observers->length(); ++i) {
-    Handle<Object> global_handle = active_observers->at(i).observer;
-    if (global_handle.is_identical_to(observer)) {
-      active_observers->Remove(i);
-      isolate->global_handles()->Destroy(global_handle.location());
-      DeliverChangeRecordsHelper(isolate, observer);
-      return;
-    }
-  }
+  HashMap* observer_records_map = isolate->observer_records_map();
+  if (!observer_records_map)
+    return;
+  HashMap::Entry* entry = observer_records_map->Lookup(
+      observer.location(), ObjectHash(*observer), false);
+  if (!entry)
+    return;
+  Object** global_handle = reinterpret_cast<Object**>(entry->key);
+  ChangeRecordList* records = reinterpret_cast<ChangeRecordList*>(entry->value);
+  observer_records_map->Remove(observer.location(), ObjectHash(*observer));
+  DeliverChangeRecordsHelper(isolate, observer, records);
+  isolate->global_handles()->Destroy(global_handle);
+  delete records;
 }
 
 void FireObjectObservations() {
   Isolate* isolate = Isolate::Current();
-  if (!isolate->active_observers())
+  if (!isolate->observer_records_map())
     return;
 
   if (isolate->delivering_observations())
@@ -319,39 +353,50 @@ void FireObjectObservations() {
 
   HandleScope scope(isolate);
 
-  while (ObserverList* active_observers = isolate->active_observers()) {
-    isolate->set_active_observers(NULL);
+  while (HashMap* observer_records_map = isolate->observer_records_map()) {
+    isolate->set_observer_records_map(NULL);
 
     Vector<ObserverWithPriority> observers_sorted =
-        active_observers->ToVector();
+        Vector<ObserverWithPriority>::New(observer_records_map->occupancy());
+    int index = 0;
+    for (HashMap::Entry* entry = observer_records_map->Start(); entry;
+         entry = observer_records_map->Next(entry)) {
+      Handle<JSFunction> observer(reinterpret_cast<JSFunction**>(entry->key));
+      ObserverWithPriority owp = {
+        observer,
+        reinterpret_cast<ChangeRecordList*>(entry->value),
+        GetObserverPriority(isolate, *observer)
+      };
+      observers_sorted[index++] = owp;
+    }
     observers_sorted.Sort(SortByPriority);
 
     for (int i = 0; i < observers_sorted.length(); ++i) {
       Handle<JSFunction> observerFn = observers_sorted[i].observer;
-      DeliverChangeRecordsHelper(isolate, observerFn);
+      DeliverChangeRecordsHelper(isolate, observerFn, observers_sorted[i].records);
       isolate->global_handles()->Destroy(
-          Handle<Object>::cast(observerFn).location());
+          reinterpret_cast<Object**>(observerFn.location()));
+      delete observers_sorted[i].records;
     }
 
-    delete active_observers;
+    delete observer_records_map;
   }
 
   isolate->set_delivering_observations(false);
 }
 
 
-void ObjectObservation::EnqueueArrayLengthChange(Handle<JSArray> array,
+void ObjectObservation::EnqueueArrayLengthChange(JSArray* array,
                                                  uint32_t new_length) {
   Heap* heap = array->GetHeap();
   Isolate* isolate = heap->isolate();
-  Factory* factory = isolate->factory();
-  if (!ObjectObservation::IsObserved(isolate, *array))
+  if (!ObjectObservation::IsObserved(isolate, array))
     return;
   if (static_cast<uint32_t>(array->length()->Number()) == new_length)
     return;
   ObjectObservation::EnqueueObservationChange(
-      isolate, array, factory->length_symbol(), factory->updated_symbol(),
-      Handle<Object>(array->length()));
+      isolate, array, heap->length_symbol(), heap->updated_symbol(),
+      array->length());
 }
 
 
@@ -2185,14 +2230,12 @@ MaybeObject* JSReceiver::SetProperty(String* name,
   if (maybe_object->ToObject(&object) &&
       (!result.IsFound() || result.type() != CALLBACKS) &&
       (!old_value || !value->SameValue(old_value))) {
-    HandleScope scope(isolate);
-    Handle<Object> object_handle(object);
-    Factory* factory = isolate->factory();
+    Heap* heap = isolate->heap();
     ObjectObservation::EnqueueObservationChange(
-        isolate, Handle<JSObject>(JSObject::cast(this)),
-        Handle<String>(name),
-        old_value->IsTheHole() ? factory->new_symbol() : factory->updated_symbol(),
-        Handle<Object>(old_value));
+        isolate, JSObject::cast(this),
+        name,
+        old_value->IsTheHole() ? heap->new_symbol() : heap->updated_symbol(),
+        old_value);
   }
   return maybe_object;
 }
@@ -4213,13 +4256,11 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
     if (mode != FORCE_DELETION) {
       MaybeObject* maybe_object = DeleteElementWithInterceptor(index);
       if (!maybe_object->IsFailure() && name) {
-        HandleScope scope(isolate);
-        Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
         ObjectObservation::EnqueueObservationChange(
-            isolate, Handle<JSObject>(this),
-            Handle<String>(name),
-            isolate->factory()->deleted_symbol(),
-            Handle<Object>(old_value));
+            isolate, this,
+            name,
+            isolate->heap()->deleted_symbol(),
+            old_value);
       }
       return maybe_object;
     }
@@ -4228,11 +4269,9 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
 
   MaybeObject* maybe_object = GetElementsAccessor()->Delete(this, index, mode);
   if (!maybe_object->IsFailure() && name) {
-    HandleScope scope(isolate);
-    Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
     ObjectObservation::EnqueueObservationChange(
-        isolate, Handle<JSObject>(this), Handle<String>(name),
-        isolate->factory()->deleted_symbol(), Handle<Object>(old_value));
+        isolate, this, name,
+        isolate->heap()->deleted_symbol(), old_value);
   }
   return maybe_object;
 }
@@ -4302,11 +4341,10 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
           DeletePropertyPostInterceptor(name, mode) :
           DeletePropertyWithInterceptor(name);
       if (!maybe_object->IsFailure() && is_observed) {
-        HandleScope scope(isolate);
-        Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
         ObjectObservation::EnqueueObservationChange(
-            isolate, Handle<JSObject>(this), Handle<String>(name),
-            isolate->factory()->deleted_symbol(), Handle<Object>(old_value));
+            isolate, this, name,
+            isolate->heap()->deleted_symbol(),
+            old_value);
       }
       return maybe_object;
     }
@@ -4319,11 +4357,9 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
     // Make sure the properties are normalized before removing the entry.
     MaybeObject* maybe_object = DeleteNormalizedProperty(name, mode);
     if (!maybe_object->IsFailure() && is_observed) {
-      HandleScope scope(isolate);
-      Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
       ObjectObservation::EnqueueObservationChange(
-          isolate, Handle<JSObject>(this), Handle<String>(name),
-          isolate->factory()->deleted_symbol(), Handle<Object>(old_value));
+          isolate, this, name,
+          isolate->heap()->deleted_symbol(), old_value);
     }
     return maybe_object;
   }
@@ -4971,12 +5007,10 @@ MaybeObject* JSObject::DefineAccessor(String* name,
       DefineElementAccessor(index, getter, setter, attributes) :
       DefinePropertyAccessor(name, getter, setter, attributes);
   if (is_observed && !maybe_object->IsFailure()) {
-    HandleScope scope(isolate);
-    Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
     ObjectObservation::EnqueueObservationChange(
-        isolate, Handle<JSObject>(this), Handle<String>(name),
-        isolate->factory()->reconfigured_symbol(),
-        Handle<Object>(old_value));
+        isolate, this, name,
+        isolate->heap()->reconfigured_symbol(),
+        old_value);
   }
   return maybe_object;
 }
@@ -9047,11 +9081,8 @@ MaybeObject* JSObject::SetFastElementsCapacityAndLength(
   }
 
   if (IsJSArray()) {
-    HandleScope scope(GetHeap()->isolate());
-    Handle<JSArray> this_handle(JSArray::cast(this));
-    Handle<FixedArray> new_elements_handle(new_elements);
-    ObjectObservation::EnqueueArrayLengthChange(this_handle, length);
-    this_handle->set_length(Smi::FromInt(length));
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), length);
+    JSArray::cast(this)->set_length(Smi::FromInt(length));
   }
 
   return new_elements;
@@ -9105,10 +9136,8 @@ MaybeObject* JSObject::SetFastDoubleElementsCapacityAndLength(
   }
 
   if (IsJSArray()) {
-    HandleScope scope(GetHeap()->isolate());
-    Handle<JSArray> this_handle(JSArray::cast(this));
-    ObjectObservation::EnqueueArrayLengthChange(this_handle, length);
-    this_handle->set_length(Smi::FromInt(length));
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), length);
+    JSArray::cast(this)->set_length(Smi::FromInt(length));
   }
 
   return this;
@@ -9796,11 +9825,8 @@ MaybeObject* JSObject::SetFastElement(uint32_t index,
   ASSERT(elements()->IsFixedArray());
   backing_store->set(index, value);
   if (must_update_array_length) {
-    HandleScope scope(GetHeap()->isolate());
-    Handle<JSArray> this_handle(JSArray::cast(this));
-    Handle<Object> value_handle(value);
-    ObjectObservation::EnqueueArrayLengthChange(this_handle, array_length);
-    this_handle->set_length(Smi::FromInt(array_length));
+    ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), array_length);
+    JSArray::cast(this)->set_length(Smi::FromInt(array_length));
   }
   return value;
 }
@@ -10015,11 +10041,8 @@ MUST_USE_RESULT MaybeObject* JSObject::SetFastDoubleElement(
       uint32_t array_length = 0;
       CHECK(JSArray::cast(this)->length()->ToArrayIndex(&array_length));
       if (index >= array_length) {
-        HandleScope scope(GetHeap()->isolate());
-        Handle<JSArray> this_handle(JSArray::cast(this));
-        Handle<Object> value_handle(value);
-        ObjectObservation::EnqueueArrayLengthChange(this_handle, index + 1);
-        this_handle->set_length(Smi::FromInt(index + 1));
+        ObjectObservation::EnqueueArrayLengthChange(JSArray::cast(this), index + 1);
+        JSArray::cast(this)->set_length(Smi::FromInt(index + 1));
       }
     }
     return value;
@@ -10180,13 +10203,11 @@ MaybeObject* JSObject::SetElement(uint32_t index,
                                    check_prototype,
                                    set_mode);
   if (!maybe_object->IsFailure() && name && !old_value->SameValue(value)) {
-    HandleScope scope(isolate);
-    Handle<Object> object_handle(maybe_object->ToObjectUnchecked());
-    Factory* factory = isolate->factory();
+    Heap* heap = isolate->heap();
     ObjectObservation::EnqueueObservationChange(
-        isolate, Handle<JSObject>(this), Handle<String>(name),
-        old_value->IsTheHole() ? factory->new_symbol() : factory->updated_symbol(),
-        Handle<Object>(old_value));
+        isolate, this, name,
+        old_value->IsTheHole() ? heap->new_symbol() : heap->updated_symbol(),
+        old_value);
   }
   return maybe_object;
 }
@@ -10390,9 +10411,7 @@ MaybeObject* JSArray::JSArrayUpdateLengthFromIndex(uint32_t index,
           GetHeap()->NumberFromDouble(static_cast<double>(index) + 1);
       if (!maybe_len->ToObject(&len)) return maybe_len;
     }
-    HandleScope scope(GetHeap()->isolate());
-    Handle<Object> value_handle(value);
-    ObjectObservation::EnqueueArrayLengthChange(Handle<JSArray>(this), index + 1);
+    ObjectObservation::EnqueueArrayLengthChange(this, index + 1);
     set_length(len);
   }
   return value;

@@ -317,12 +317,6 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 typedef List<HeapObject*, PreallocatedStorageAllocationPolicy> DebugObjectCache;
 
-struct ObserverWithPriority {
-  Handle<JSFunction> observer;
-  int priority;
-};
-typedef List<ObserverWithPriority> ObserverList;
-
 #define ISOLATE_INIT_LIST(V)                                                   \
   /* SerializerDeserializer state. */                                          \
   V(int, serialize_partial_snapshot_cache_length, 0)                           \
@@ -360,7 +354,7 @@ typedef List<ObserverWithPriority> ObserverList;
   V(uint64_t, enabled_cpu_features, 0)                                         \
   V(CpuProfiler*, cpu_profiler, NULL)                                          \
   V(HeapProfiler*, heap_profiler, NULL)                                        \
-  V(ObserverList*, active_observers, NULL)                                        \
+  V(HashMap*, observer_records_map, NULL)                                       \
   V(bool, delivering_observations, false)                                      \
   ISOLATE_DEBUGGER_INIT_LIST(V)
 

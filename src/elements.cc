@@ -747,19 +747,14 @@ class ElementsAccessorBase : public ElementsAccessor {
 
 
 static void EnqueueTruncatedArrayRecords(Isolate* isolate,
-                                         Handle<JSArray> array,
-                                         const List<uint32_t>& indices,
+                                         JSArray* array,
+                                         const List<Object*>& indices,
                                          const List<Object*>& old_values) {
   ASSERT(indices.length() == old_values.length());
-  Vector< Handle<Object> > old_value_handles =
-      Vector< Handle<Object> >::New(old_values.length());
   for (int i = 0; i < old_values.length(); ++i) {
-    old_value_handles[i] = Handle<Object>(old_values[i]);
-  }
-  for (int i = 0; i < indices.length(); ++i) {
     ObjectObservation::EnqueueObservationChange(
-        isolate, array, indices[i], isolate->factory()->deleted_symbol(),
-        old_value_handles[i]);
+        isolate, array, indices[i], isolate->heap()->deleted_symbol(),
+        old_values[i]);
   }
 }
 
@@ -805,7 +800,7 @@ class FastElementsAccessor
         MaybeObject* maybe_obj = array->EnsureWritableFastElements();
         if (!maybe_obj->To(&backing_store)) return maybe_obj;
       }
-      List<uint32_t> indices;
+      List<Object*> indices;
       List<Object*> old_values;
       Isolate* isolate = array->GetHeap()->isolate();
       uint32_t end_index = static_cast<uint32_t>(old_length->Number());
@@ -813,7 +808,11 @@ class FastElementsAccessor
           ObjectObservation::IsObserved(isolate, array)) {
         while (end_index-- > length) {
           if (!backing_store->is_the_hole(end_index)) {
-            indices.Add(end_index);
+            Object* index_object;
+            { MaybeObject* maybe_object = isolate->heap()->NumberFromUint32(end_index);
+              if (!maybe_object->ToObject(&index_object)) return maybe_object;
+            }
+            indices.Add(index_object);
             // FIXME: Should be able to access the backing_store directly here
             Object* old_value;
             { MaybeObject* maybe_object = array->GetElement(end_index);
@@ -844,9 +843,7 @@ class FastElementsAccessor
       }
       if (!indices.is_empty()) {
         ASSERT(indices.length() == old_values.length());
-        HandleScope scope(isolate);
-        Handle<Object> length_handle(length_object);
-        EnqueueTruncatedArrayRecords(isolate, Handle<JSArray>(array),
+        EnqueueTruncatedArrayRecords(isolate, array,
                                      indices, old_values);
       }
       return length_object;
@@ -1312,7 +1309,7 @@ class DictionaryElementsAccessor
       JSArray* array,
       Object* length_object,
       uint32_t length) {
-    List<uint32_t> indices;
+    List<Object*> indices;
     List<Object*> old_values;
     Isolate* isolate = array->GetHeap()->isolate();
     uint32_t old_length = static_cast<uint32_t>(array->length()->Number());
@@ -1321,7 +1318,11 @@ class DictionaryElementsAccessor
       uint32_t end_index = old_length;
       while (end_index-- > length) {
         if (array->HasElement(end_index)) {
-          indices.Add(end_index);
+          Object* index_object;
+          { MaybeObject* maybe_object = isolate->heap()->NumberFromUint32(end_index);
+            if (!maybe_object->ToObject(&index_object)) return maybe_object;
+          }
+          indices.Add(index_object);
           Object* old_value;
           { MaybeObject* maybe_object = array->GetElement(end_index);
             if (!maybe_object->ToObject(&old_value)) return maybe_object;
@@ -1379,9 +1380,7 @@ class DictionaryElementsAccessor
     }
     if (!indices.is_empty()) {
       ASSERT(indices.length() == old_values.length());
-      HandleScope scope(isolate);
-      Handle<Object> length_handle(length_object);
-      EnqueueTruncatedArrayRecords(isolate, Handle<JSArray>(array),
+      EnqueueTruncatedArrayRecords(isolate, array,
                                    indices, old_values);
     }
     return length_object;
@@ -1714,9 +1713,7 @@ MUST_USE_RESULT MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass,
       if (!result->ToObject(&new_length)) return result;
       ASSERT(new_length->IsSmi() || new_length->IsUndefined());
       if (new_length->IsSmi()) {
-        HandleScope scope(array->GetHeap()->isolate());
-        Handle<JSArray> array_handle(array);
-        ObjectObservation::EnqueueArrayLengthChange(array_handle, value);
+        ObjectObservation::EnqueueArrayLengthChange(array, value);
         array->set_length(Smi::cast(new_length));
         return array;
       }
@@ -1738,9 +1735,7 @@ MUST_USE_RESULT MaybeObject* ElementsAccessorBase<ElementsAccessorSubclass,
           SetLengthWithoutNormalize(dictionary, array, length, value);
       if (!result->ToObject(&new_length)) return result;
       ASSERT(new_length->IsNumber());
-      HandleScope scope(array->GetHeap()->isolate());
-      Handle<JSArray> array_handle(array);
-      ObjectObservation::EnqueueArrayLengthChange(array_handle, value);
+      ObjectObservation::EnqueueArrayLengthChange(array, value);
       array->set_length(new_length);
       return array;
     } else {
