@@ -751,6 +751,8 @@ static void EnqueueTruncatedArrayRecords(Isolate* isolate,
                                          const List<Object*>& indices,
                                          const List<Object*>& old_values) {
   ASSERT(indices.length() == old_values.length());
+  // Note that the lists are expected to be in descending order
+  // (biggest indices first).
   for (int i = 0; i < old_values.length(); ++i) {
     ObjectObservation::EnqueueObservationChange(
         isolate, array, indices[i], isolate->heap()->deleted_symbol(),

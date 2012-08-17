@@ -1058,7 +1058,7 @@ class Isolate {
     date_cache_ = date_cache;
   }
 
-  int observer_priority() {
+  int get_next_observer_priority() {
     return observer_priority_++;
   }
 

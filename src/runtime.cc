@@ -9837,8 +9837,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectGetNotifier) {
 
   Handle<JSObject> object(raw_object);
 
-  Handle<String> notifier_key = factory->LookupAsciiSymbol("___notifier");
-  Handle<String> target_key = factory->LookupAsciiSymbol("___target");
+  Handle<String> notifier_key = factory->hidden_notifier_symbol();
+  Handle<String> target_key = factory->hidden_observer_target_symbol();
   {
     Object* notifier = object->GetHiddenProperty(*notifier_key);
     if (!notifier->IsUndefined())

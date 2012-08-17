@@ -84,7 +84,7 @@ static void AddObserverPriorityIfNeeded(Isolate* isolate, Handle<JSObject> obser
       isolate,
       JSObject::SetHiddenProperty(
           observer, Handle<String>(key),
-          Handle<Object>(Smi::FromInt(isolate->observer_priority()))));
+          Handle<Object>(Smi::FromInt(isolate->get_next_observer_priority()))));
 }
 
 static void EnsureObserverInitialized(Isolate* isolate,
@@ -191,8 +191,11 @@ static bool HandlesMatch(void* key1, void* key2) {
 }
 
 static uint32_t ObjectHash(JSObject* key) {
+  // Observers always have an identity hash, thanks to
+  // EnsureObserverInitialized().
   ASSERT(IsObserver(key));
   MaybeObject* maybe_hash = key->GetIdentityHash(OMIT_CREATION);
+  ASSERT(!maybe_hash->IsFailure());
   return static_cast<uint32_t>(
       Smi::cast(maybe_hash->ToObjectUnchecked())->value());
 }

@@ -211,6 +211,8 @@ namespace internal {
   V(hidden_change_observers_symbol, "___changeObservers")                \
   V(hidden_change_records_symbol, "___changeRecords")                    \
   V(hidden_observer_priority_symbol, "___observerPriority")              \
+  V(hidden_observer_target_symbol, "___observerTarget")                  \
+  V(hidden_notifier_symbol, "___notifier")                               \
   V(InitializeVarGlobal_symbol, "InitializeVarGlobal")                   \
   V(InitializeConstGlobal_symbol, "InitializeConstGlobal")               \
   V(KeyedLoadElementMonomorphic_symbol,                                  \

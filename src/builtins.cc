@@ -212,18 +212,17 @@ BUILTIN(ObjectNotifierNotify) {
   Handle<JSObject> notifier(JSObject::cast(receiver));
   Handle<JSObject> record_arg(JSObject::cast(args[1]));
 
-  Handle<String> target_sym = factory->LookupAsciiSymbol("___target");
-  Object* raw_target = notifier->GetHiddenProperty(*target_sym);
+  Object* raw_target = notifier->GetHiddenProperty(
+      heap->hidden_observer_target_symbol());
   // FIXME: The spec says not to throw here, but that seems weird
   if (raw_target->IsUndefined())
     return heap->undefined_value();
   Handle<JSObject> target(JSObject::cast(raw_target));
 
-  Handle<String> type_sym = factory->LookupAsciiSymbol("type");
   Handle<String> type;
   {
     LookupResult result(isolate);
-    record_arg->Lookup(*type_sym, &result);
+    record_arg->Lookup(heap->type_symbol(), &result);
     if (result.IsFound()) {
       Object* obj = result.GetLazyValue();
       if (obj->IsString())
