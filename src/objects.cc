@@ -313,6 +313,11 @@ static void DeliverChangeRecordsHelper(Isolate* isolate,
       isolate->factory()->NewJSArrayWithElements(records_fixed_array);
   Handle<Object> args[] = { js_records };
 
+  // Bail out of the observer's context is detached.
+  // FIXME: Is there any reason we'd still want to callback in this case?
+  if (!observer->context()->global_proxy()->IsJSGlobalProxy())
+    return;
+
   Handle<Object> this_handle(isolate->heap()->undefined_value());
   v8::TryCatch catcher;
   catcher.SetVerbose(false);
