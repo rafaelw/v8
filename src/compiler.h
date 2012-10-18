@@ -72,7 +72,7 @@ class CompilationInfo {
   Handle<Script> script() const { return script_; }
   v8::Extension* extension() const { return extension_; }
   ScriptDataImpl* pre_parse_data() const { return pre_parse_data_; }
-  Handle<Context> calling_context() const { return calling_context_; }
+  Handle<Context> context() const { return context_; }
   BailoutId osr_ast_id() const { return osr_ast_id_; }
 
   void MarkAsEval() {
@@ -120,9 +120,8 @@ class CompilationInfo {
     ASSERT(!is_lazy());
     pre_parse_data_ = pre_parse_data;
   }
-  void SetCallingContext(Handle<Context> context) {
-    ASSERT(is_eval());
-    calling_context_ = context;
+  void SetContext(Handle<Context> context) {
+    context_ = context;
   }
   void MarkCompilingForDebugging(Handle<Code> current_code) {
     ASSERT(mode_ != OPTIMIZE);
@@ -139,11 +138,12 @@ class CompilationInfo {
   }
 
   bool has_global_object() const {
-    return !closure().is_null() && (closure()->context()->global() != NULL);
+    return !closure().is_null() &&
+        (closure()->context()->global_object() != NULL);
   }
 
   GlobalObject* global_object() const {
-    return has_global_object() ? closure()->context()->global() : NULL;
+    return has_global_object() ? closure()->context()->global_object() : NULL;
   }
 
   // Accessors for the different compilation modes.
@@ -179,9 +179,12 @@ class CompilationInfo {
   void SaveHandles() {
     SaveHandle(&closure_);
     SaveHandle(&shared_info_);
-    SaveHandle(&calling_context_);
+    SaveHandle(&context_);
     SaveHandle(&script_);
   }
+
+  const char* bailout_reason() const { return bailout_reason_; }
+  void set_bailout_reason(const char* reason) { bailout_reason_ = reason; }
 
  private:
   Isolate* isolate_;
@@ -207,6 +210,7 @@ class CompilationInfo {
       ASSERT(language_mode() == CLASSIC_MODE);
       SetLanguageMode(shared_info_->language_mode());
     }
+    set_bailout_reason("unknown");
   }
 
   void SetMode(Mode mode) {
@@ -257,9 +261,9 @@ class CompilationInfo {
   v8::Extension* extension_;
   ScriptDataImpl* pre_parse_data_;
 
-  // The context of the caller is needed for eval code, and will be a null
-  // handle otherwise.
-  Handle<Context> calling_context_;
+  // The context of the caller for eval code, and the global context for a
+  // global script. Will be a null handle otherwise.
+  Handle<Context> context_;
 
   // Compilation mode flag and whether deoptimization is allowed.
   Mode mode_;
@@ -278,6 +282,8 @@ class CompilationInfo {
       *object = handle;
     }
   }
+
+  const char* bailout_reason_;
 
   DISALLOW_COPY_AND_ASSIGN(CompilationInfo);
 };
@@ -359,7 +365,7 @@ class OptimizingCompiler: public ZoneObject {
 
   MUST_USE_RESULT Status AbortOptimization() {
     info_->AbortOptimization();
-    info_->shared_info()->DisableOptimization();
+    info_->shared_info()->DisableOptimization(info_->bailout_reason());
     return SetLastStatus(BAILED_OUT);
   }
 
@@ -410,10 +416,6 @@ class OptimizingCompiler: public ZoneObject {
 
 class Compiler : public AllStatic {
  public:
-  // Default maximum number of function optimization attempts before we
-  // give up.
-  static const int kDefaultMaxOptCount = 10;
-
   static const int kMaxInliningLevels = 3;
 
   // Call count before primitive functions trigger their own optimization.
@@ -428,6 +430,7 @@ class Compiler : public AllStatic {
                                             Handle<Object> script_name,
                                             int line_offset,
                                             int column_offset,
+                                            Handle<Context> context,
                                             v8::Extension* extension,
                                             ScriptDataImpl* pre_data,
                                             Handle<Object> script_data,

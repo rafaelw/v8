@@ -304,7 +304,7 @@ static Handle<Map> ComputeObjectLiteralMap(
     }
   }
   // If we only have symbols and array indices among keys then we can
-  // use the map cache in the global context.
+  // use the map cache in the native context.
   const int kMaxKeys = 10;
   if ((number_of_symbol_keys == number_of_properties) &&
       (number_of_symbol_keys < kMaxKeys)) {
@@ -343,14 +343,14 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
     Handle<FixedArray> constant_properties,
     bool should_have_fast_elements,
     bool has_function_literal) {
-  // Get the global context from the literals array.  This is the
+  // Get the native context from the literals array.  This is the
   // context in which the function was created and we use the object
   // function from this context to create the object literal.  We do
-  // not use the object function from the current global context
+  // not use the object function from the current native context
   // because this might be the object function from another context
   // which we should not have access to.
   Handle<Context> context =
-      Handle<Context>(JSFunction::GlobalContextFromLiterals(*literals));
+      Handle<Context>(JSFunction::NativeContextFromLiterals(*literals));
 
   // In case we have function literals, we want the object to be in
   // slow properties mode for now. We don't go in the map cache because
@@ -465,7 +465,7 @@ Handle<Object> Runtime::CreateArrayLiteralBoilerplate(
     Handle<FixedArray> elements) {
   // Create the JSArray.
   Handle<JSFunction> constructor(
-      JSFunction::GlobalContextFromLiterals(*literals)->array_function());
+      JSFunction::NativeContextFromLiterals(*literals)->array_function());
   Handle<JSArray> object =
       Handle<JSArray>::cast(isolate->factory()->NewJSObject(constructor));
 
@@ -475,8 +475,8 @@ Handle<Object> Runtime::CreateArrayLiteralBoilerplate(
       FixedArrayBase::cast(elements->get(1)));
 
   ASSERT(IsFastElementsKind(constant_elements_kind));
-  Context* global_context = isolate->context()->global_context();
-  Object* maybe_maps_array = global_context->js_array_maps();
+  Context* native_context = isolate->context()->native_context();
+  Object* maybe_maps_array = native_context->js_array_maps();
   ASSERT(!maybe_maps_array->IsUndefined());
   Object* maybe_map = FixedArray::cast(maybe_maps_array)->get(
       constant_elements_kind);
@@ -674,7 +674,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CreateArrayLiteralShallow) {
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_CreateJSProxy) {
   ASSERT(args.length() == 2);
-  Object* handler = args[0];
+  CONVERT_ARG_CHECKED(JSReceiver, handler, 0);
   Object* prototype = args[1];
   Object* used_prototype =
       prototype->IsJSReceiver() ? prototype : isolate->heap()->null_value();
@@ -684,9 +684,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CreateJSProxy) {
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_CreateJSFunctionProxy) {
   ASSERT(args.length() == 4);
-  Object* handler = args[0];
+  CONVERT_ARG_CHECKED(JSReceiver, handler, 0);
   Object* call_trap = args[1];
-  Object* construct_trap = args[2];
+  RUNTIME_ASSERT(call_trap->IsJSFunction() || call_trap->IsJSFunctionProxy());
+  CONVERT_ARG_CHECKED(JSFunction, construct_trap, 2);
   Object* prototype = args[3];
   Object* used_prototype =
       prototype->IsJSReceiver() ? prototype : isolate->heap()->null_value();
@@ -1295,7 +1296,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DisableAccessChecks) {
   if (needs_access_checks) {
     // Copy map so it won't interfere constructor's initial map.
     Map* new_map;
-    MaybeObject* maybe_new_map = old_map->Copy(DescriptorArray::MAY_BE_SHARED);
+    MaybeObject* maybe_new_map = old_map->Copy();
     if (!maybe_new_map->To(&new_map)) return maybe_new_map;
 
     new_map->set_is_access_check_needed(false);
@@ -1312,7 +1313,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_EnableAccessChecks) {
   if (!old_map->is_access_check_needed()) {
     // Copy map so it won't interfere constructor's initial map.
     Map* new_map;
-    MaybeObject* maybe_new_map = old_map->Copy(DescriptorArray::MAY_BE_SHARED);
+    MaybeObject* maybe_new_map = old_map->Copy();
     if (!maybe_new_map->To(&new_map)) return maybe_new_map;
 
     new_map->set_is_access_check_needed(true);
@@ -1339,7 +1340,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareGlobals) {
   ASSERT(args.length() == 3);
   HandleScope scope(isolate);
   Handle<GlobalObject> global = Handle<GlobalObject>(
-      isolate->context()->global());
+      isolate->context()->global_object());
 
   Handle<Context> context = args.at<Context>(0);
   CONVERT_ARG_HANDLE_CHECKED(FixedArray, pairs, 1);
@@ -1447,7 +1448,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareContextSlot) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 4);
 
-  // Declarations are always made in a function or global context.  In the
+  // Declarations are always made in a function or native context.  In the
   // case of eval code, the context passed is the context of the caller,
   // which may be some nested context and not the declaration context.
   RUNTIME_ASSERT(args[0]->IsContext());
@@ -1486,7 +1487,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareContextSlot) {
         }
       } else {
         // Slow case: The property is in the context extension object of a
-        // function context or the global object of a global context.
+        // function context or the global object of a native context.
         Handle<JSObject> object = Handle<JSObject>::cast(holder);
         RETURN_IF_EMPTY_HANDLE(
             isolate,
@@ -1557,7 +1558,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
   bool assign = args.length() == 3;
 
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
-  GlobalObject* global = isolate->context()->global();
+  GlobalObject* global = isolate->context()->global_object();
   RUNTIME_ASSERT(args[1]->IsSmi());
   CONVERT_LANGUAGE_MODE_ARG(language_mode, 1);
   StrictModeFlag strict_mode_flag = (language_mode == CLASSIC_MODE)
@@ -1600,7 +1601,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
   }
 
   // Reload global in case the loop above performed a GC.
-  global = isolate->context()->global();
+  global = isolate->context()->global_object();
   if (assign) {
     return global->SetProperty(*name, args[2], attributes, strict_mode_flag);
   }
@@ -1617,7 +1618,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstGlobal) {
   Handle<Object> value = args.at<Object>(1);
 
   // Get the current global object from top.
-  GlobalObject* global = isolate->context()->global();
+  GlobalObject* global = isolate->context()->global_object();
 
   // According to ECMA-262, section 12.2, page 62, the property must
   // not be deletable. Since it's a const, it must be READ_ONLY too.
@@ -1641,7 +1642,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstGlobal) {
     // Restore global object from context (in case of GC) and continue
     // with setting the value.
     HandleScope handle_scope(isolate);
-    Handle<GlobalObject> global(isolate->context()->global());
+    Handle<GlobalObject> global(isolate->context()->global_object());
 
     // BUG 1213575: Handle the case where we have to set a read-only
     // property through an interceptor and only do it if it's
@@ -1687,7 +1688,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstContextSlot) {
   Handle<Object> value(args[0], isolate);
   ASSERT(!value->IsTheHole());
 
-  // Initializations are always done in a function or global context.
+  // Initializations are always done in a function or native context.
   RUNTIME_ASSERT(args[1]->IsContext());
   Handle<Context> context(Context::cast(args[1])->declaration_context());
 
@@ -1715,7 +1716,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstContextSlot) {
   // global object.
   if (attributes == ABSENT) {
     Handle<JSObject> global = Handle<JSObject>(
-        isolate->context()->global());
+        isolate->context()->global_object());
     // Strict mode not needed (const disallowed in strict mode).
     RETURN_IF_EMPTY_HANDLE(
         isolate,
@@ -1836,7 +1837,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_RegExpConstructResult) {
     AssertNoAllocation no_gc;
     HandleScope scope(isolate);
     reinterpret_cast<HeapObject*>(new_object)->
-        set_map(isolate->global_context()->regexp_result_map());
+        set_map(isolate->native_context()->regexp_result_map());
   }
   JSArray* array = JSArray::cast(new_object);
   array->set_properties(isolate->heap()->empty_fixed_array());
@@ -1988,9 +1989,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetDefaultReceiver) {
   // Returns undefined for strict or native functions, or
   // the associated global receiver for "normal" functions.
 
-  Context* global_context =
-      function->context()->global()->global_context();
-  return global_context->global()->global_receiver();
+  Context* native_context =
+      function->context()->global_object()->native_context();
+  return native_context->global_object()->global_receiver();
 }
 
 
@@ -2005,11 +2006,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_MaterializeRegExpLiteral) {
   // Get the RegExp function from the context in the literals array.
   // This is the RegExp function from the context in which the
   // function was created.  We do not use the RegExp function from the
-  // current global context because this might be the RegExp function
+  // current native context because this might be the RegExp function
   // from another context which we should not have access to.
   Handle<JSFunction> constructor =
       Handle<JSFunction>(
-          JSFunction::GlobalContextFromLiterals(*literals)->regexp_function());
+          JSFunction::NativeContextFromLiterals(*literals)->regexp_function());
   // Compute the regular expression literal.
   bool has_pending_exception;
   Handle<Object> regexp =
@@ -2067,8 +2068,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_FunctionRemovePrototype) {
   ASSERT(args.length() == 1);
 
   CONVERT_ARG_CHECKED(JSFunction, f, 0);
-  Object* obj = f->RemovePrototype();
-  if (obj->IsFailure()) return obj;
+  f->RemovePrototype();
 
   return isolate->heap()->undefined_value();
 }
@@ -2167,20 +2167,20 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_FunctionSetReadOnlyPrototype) {
     // Construct a new field descriptor with updated attributes.
     DescriptorArray* instance_desc = function->map()->instance_descriptors();
 
-    int index = instance_desc->Search(name);
+    int index = instance_desc->SearchWithCache(name, function->map());
     ASSERT(index != DescriptorArray::kNotFound);
     PropertyDetails details = instance_desc->GetDetails(index);
 
     CallbacksDescriptor new_desc(name,
         instance_desc->GetValue(index),
         static_cast<PropertyAttributes>(details.attributes() | READ_ONLY),
-        details.index());
+        details.descriptor_index());
 
     // Create a new map featuring the new field descriptors array.
     Map* new_map;
     MaybeObject* maybe_map =
         function->map()->CopyReplaceDescriptor(
-            &new_desc, index, OMIT_TRANSITION);
+            instance_desc, &new_desc, index, OMIT_TRANSITION);
     if (!maybe_map->To(&new_map)) return maybe_map;
 
     function->set_map(new_map);
@@ -2192,7 +2192,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_FunctionSetReadOnlyPrototype) {
     PropertyDetails new_details(
         static_cast<PropertyAttributes>(details.attributes() | READ_ONLY),
         details.type(),
-        details.index());
+        details.dictionary_index());
     function->property_dictionary()->DetailsAtPut(entry, new_details);
   }
   return function;
@@ -2255,6 +2255,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetCode) {
 
   // Set the code of the target function.
   target->ReplaceCode(source_shared->code());
+  ASSERT(target->next_function_link()->IsUndefined());
 
   // Make sure we get a fresh copy of the literal vector to avoid cross
   // context contamination.
@@ -2263,14 +2264,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetCode) {
   Handle<FixedArray> literals =
       isolate->factory()->NewFixedArray(number_of_literals, TENURED);
   if (number_of_literals > 0) {
-    literals->set(JSFunction::kLiteralGlobalContextIndex,
-                  context->global_context());
+    literals->set(JSFunction::kLiteralNativeContextIndex,
+                  context->native_context());
   }
   target->set_context(*context);
   target->set_literals(*literals);
-  target->set_next_function_link(isolate->heap()->undefined_value());
 
-  if (isolate->logger()->is_logging() || CpuProfiler::is_profiling(isolate)) {
+  if (isolate->logger()->is_logging_code_events() ||
+      CpuProfiler::is_profiling(isolate)) {
     isolate->logger()->LogExistingFunction(
         source_shared, Handle<Code>(source_shared->code()));
   }
@@ -2307,19 +2308,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringCharCodeAt) {
   ASSERT(args.length() == 2);
 
   CONVERT_ARG_CHECKED(String, subject, 0);
-  Object* index = args[1];
-  RUNTIME_ASSERT(index->IsNumber());
-
-  uint32_t i = 0;
-  if (index->IsSmi()) {
-    int value = Smi::cast(index)->value();
-    if (value < 0) return isolate->heap()->nan_value();
-    i = value;
-  } else {
-    ASSERT(index->IsHeapNumber());
-    double value = HeapNumber::cast(index)->value();
-    i = static_cast<uint32_t>(DoubleToInteger(value));
-  }
+  CONVERT_NUMBER_CHECKED(uint32_t, i, Uint32, args[1]);
 
   // Flatten the string.  If someone wants to get a char at an index
   // in a cons string, it is likely that more indices will be
@@ -2413,17 +2402,12 @@ class FixedArrayBuilder {
     return array_->length();
   }
 
-  Handle<JSArray> ToJSArray() {
-    Handle<JSArray> result_array = FACTORY->NewJSArrayWithElements(array_);
-    result_array->set_length(Smi::FromInt(length_));
-    return result_array;
-  }
-
   Handle<JSArray> ToJSArray(Handle<JSArray> target_array) {
     FACTORY->SetContent(target_array, array_);
     target_array->set_length(Smi::FromInt(length_));
     return target_array;
   }
+
 
  private:
   Handle<FixedArray> array_;
@@ -2541,10 +2525,6 @@ class ReplacementStringBuilder {
       V8::FatalProcessOutOfMemory("String.replace result too large.");
     }
     character_count_ += by;
-  }
-
-  Handle<JSArray> GetParts() {
-    return array_builder_.ToJSArray();
   }
 
  private:
@@ -3034,7 +3014,7 @@ MUST_USE_RESULT static MaybeObject* StringReplaceAtomRegExpWithString(
   }
 
   int32_t match_indices[] = { indices.at(matches - 1),
-                            indices.at(matches - 1) + pattern_len };
+                              indices.at(matches - 1) + pattern_len };
   RegExpImpl::SetLastMatchInfo(last_match_info, subject, 0, match_indices);
 
   return *result;
@@ -3066,7 +3046,7 @@ MUST_USE_RESULT static MaybeObject* StringReplaceRegExpWithString(
   if (is_global &&
       regexp->TypeTag() == JSRegExp::ATOM &&
       simple_replace) {
-    if (subject->HasOnlyAsciiChars()) {
+    if (subject->HasOnlyAsciiChars() && replacement->HasOnlyAsciiChars()) {
       return StringReplaceAtomRegExpWithString<SeqAsciiString>(
           isolate, subject, regexp, replacement, last_match_info);
     } else {
@@ -3129,6 +3109,7 @@ MUST_USE_RESULT static MaybeObject* StringReplaceRegExpWithString(
   if (global_cache.HasException()) return Failure::Exception();
 
   if (prev < subject_length) {
+    builder.EnsureCapacity(2);
     builder.AddSubjectSlice(prev, subject_length);
   }
 
@@ -3297,12 +3278,12 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringReplaceRegExpWithString) {
 }
 
 
-Handle<String> Runtime::StringReplaceOneCharWithString(Isolate* isolate,
-                                                       Handle<String> subject,
-                                                       Handle<String> search,
-                                                       Handle<String> replace,
-                                                       bool* found,
-                                                       int recursion_limit) {
+Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
+                                              Handle<String> subject,
+                                              Handle<String> search,
+                                              Handle<String> replace,
+                                              bool* found,
+                                              int recursion_limit) {
   if (recursion_limit == 0) return Handle<String>::null();
   if (subject->IsConsString()) {
     ConsString* cons = ConsString::cast(*subject);
@@ -3330,7 +3311,7 @@ Handle<String> Runtime::StringReplaceOneCharWithString(Isolate* isolate,
 
     return subject;
   } else {
-    int index = StringMatch(isolate, subject, search, 0);
+    int index = Runtime::StringMatch(isolate, subject, search, 0);
     if (index == -1) return subject;
     *found = true;
     Handle<String> first = isolate->factory()->NewSubString(subject, 0, index);
@@ -3353,20 +3334,19 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringReplaceOneCharWithString) {
   // retry with a flattened subject string.
   const int kRecursionLimit = 0x1000;
   bool found = false;
-  Handle<String> result =
-      Runtime::StringReplaceOneCharWithString(isolate,
-                                              subject,
-                                              search,
-                                              replace,
-                                              &found,
-                                              kRecursionLimit);
+  Handle<String> result = StringReplaceOneCharWithString(isolate,
+                                                         subject,
+                                                         search,
+                                                         replace,
+                                                         &found,
+                                                         kRecursionLimit);
   if (!result.is_null()) return *result;
-  return *Runtime::StringReplaceOneCharWithString(isolate,
-                                                  FlattenGetString(subject),
-                                                  search,
-                                                  replace,
-                                                  &found,
-                                                  kRecursionLimit);
+  return *StringReplaceOneCharWithString(isolate,
+                                         FlattenGetString(subject),
+                                         search,
+                                         replace,
+                                         &found,
+                                         kRecursionLimit);
 }
 
 
@@ -3666,20 +3646,56 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringMatch) {
 // Only called from Runtime_RegExpExecMultiple so it doesn't need to maintain
 // separate last match info.  See comment on that function.
 template<bool has_capture>
-static int SearchRegExpMultiple(
+static MaybeObject* SearchRegExpMultiple(
     Isolate* isolate,
     Handle<String> subject,
     Handle<JSRegExp> regexp,
     Handle<JSArray> last_match_array,
-    FixedArrayBuilder* builder) {
+    Handle<JSArray> result_array) {
   ASSERT(subject->IsFlat());
   ASSERT_NE(has_capture, regexp->CaptureCount() == 0);
 
-  RegExpImpl::GlobalCache global_cache(regexp, subject, true, isolate);
-  if (global_cache.HasException()) return RegExpImpl::RE_EXCEPTION;
-
   int capture_count = regexp->CaptureCount();
   int subject_length = subject->length();
+
+  static const int kMinLengthToCache = 0x1000;
+
+  if (subject_length > kMinLengthToCache) {
+    Handle<Object> cached_answer(RegExpResultsCache::Lookup(
+        isolate->heap(),
+        *subject,
+        regexp->data(),
+        RegExpResultsCache::REGEXP_MULTIPLE_INDICES));
+    if (*cached_answer != Smi::FromInt(0)) {
+      Handle<FixedArray> cached_fixed_array =
+          Handle<FixedArray>(FixedArray::cast(*cached_answer));
+      // The cache FixedArray is a COW-array and can therefore be reused.
+      isolate->factory()->SetContent(result_array, cached_fixed_array);
+      // The actual length of the result array is stored in the last element of
+      // the backing store (the backing FixedArray may have a larger capacity).
+      Object* cached_fixed_array_last_element =
+          cached_fixed_array->get(cached_fixed_array->length() - 1);
+      Smi* js_array_length = Smi::cast(cached_fixed_array_last_element);
+      result_array->set_length(js_array_length);
+      RegExpImpl::SetLastMatchInfo(
+          last_match_array, subject, capture_count, NULL);
+      return *result_array;
+    }
+  }
+
+  RegExpImpl::GlobalCache global_cache(regexp, subject, true, isolate);
+  if (global_cache.HasException()) return Failure::Exception();
+
+  Handle<FixedArray> result_elements;
+  if (result_array->HasFastObjectElements()) {
+    result_elements =
+        Handle<FixedArray>(FixedArray::cast(result_array->elements()));
+  }
+  if (result_elements.is_null() || result_elements->length() < 16) {
+    result_elements = isolate->factory()->NewFixedArrayWithHoles(16);
+  }
+
+  FixedArrayBuilder builder(result_elements);
 
   // Position to search from.
   int match_start = -1;
@@ -3693,9 +3709,9 @@ static int SearchRegExpMultiple(
     int32_t* current_match = global_cache.FetchNext();
     if (current_match == NULL) break;
     match_start = current_match[0];
-    builder->EnsureCapacity(kMaxBuilderEntriesPerRegExpMatch);
+    builder.EnsureCapacity(kMaxBuilderEntriesPerRegExpMatch);
     if (match_end < match_start) {
-      ReplacementStringBuilder::AddSubjectSlice(builder,
+      ReplacementStringBuilder::AddSubjectSlice(&builder,
                                                 match_end,
                                                 match_start);
     }
@@ -3737,19 +3753,19 @@ static int SearchRegExpMultiple(
         }
         elements->set(capture_count + 1, Smi::FromInt(match_start));
         elements->set(capture_count + 2, *subject);
-        builder->Add(*isolate->factory()->NewJSArrayWithElements(elements));
+        builder.Add(*isolate->factory()->NewJSArrayWithElements(elements));
       } else {
-        builder->Add(*match);
+        builder.Add(*match);
       }
     }
   }
 
-  if (global_cache.HasException()) return RegExpImpl::RE_EXCEPTION;
+  if (global_cache.HasException()) return Failure::Exception();
 
   if (match_start >= 0) {
     // Finished matching, with at least one match.
     if (match_end < subject_length) {
-      ReplacementStringBuilder::AddSubjectSlice(builder,
+      ReplacementStringBuilder::AddSubjectSlice(&builder,
                                                 match_end,
                                                 subject_length);
     }
@@ -3757,9 +3773,23 @@ static int SearchRegExpMultiple(
     RegExpImpl::SetLastMatchInfo(
         last_match_array, subject, capture_count, NULL);
 
-    return RegExpImpl::RE_SUCCESS;
+    if (subject_length > kMinLengthToCache) {
+      // Store the length of the result array into the last element of the
+      // backing FixedArray.
+      builder.EnsureCapacity(1);
+      Handle<FixedArray> fixed_array = builder.array();
+      fixed_array->set(fixed_array->length() - 1,
+                       Smi::FromInt(builder.length()));
+      // Cache the result and turn the FixedArray into a COW array.
+      RegExpResultsCache::Enter(isolate->heap(),
+                                *subject,
+                                regexp->data(),
+                                *fixed_array,
+                                RegExpResultsCache::REGEXP_MULTIPLE_INDICES);
+    }
+    return *builder.ToJSArray(result_array);
   } else {
-    return RegExpImpl::RE_FAILURE;  // No matches at all.
+    return isolate->heap()->null_value();  // No matches at all.
   }
 }
 
@@ -3779,29 +3809,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_RegExpExecMultiple) {
 
   ASSERT(last_match_info->HasFastObjectElements());
   ASSERT(regexp->GetFlags().is_global());
-  Handle<FixedArray> result_elements;
-  if (result_array->HasFastObjectElements()) {
-    result_elements =
-        Handle<FixedArray>(FixedArray::cast(result_array->elements()));
-  }
-  if (result_elements.is_null() || result_elements->length() < 16) {
-    result_elements = isolate->factory()->NewFixedArrayWithHoles(16);
-  }
-  FixedArrayBuilder builder(result_elements);
 
-  int result;
   if (regexp->CaptureCount() == 0) {
-    result = SearchRegExpMultiple<false>(
-        isolate, subject, regexp, last_match_info, &builder);
+    return SearchRegExpMultiple<false>(
+        isolate, subject, regexp, last_match_info, result_array);
   } else {
-    result = SearchRegExpMultiple<true>(
-        isolate, subject, regexp, last_match_info, &builder);
+    return SearchRegExpMultiple<true>(
+        isolate, subject, regexp, last_match_info, result_array);
   }
-
-  if (result == RegExpImpl::RE_SUCCESS) return *builder.ToJSArray(result_array);
-  if (result == RegExpImpl::RE_FAILURE) return isolate->heap()->null_value();
-  ASSERT_EQ(result, RegExpImpl::RE_EXCEPTION);
-  return Failure::Exception();
 }
 
 
@@ -5033,15 +5048,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ToFastProperties) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_ToSlowProperties) {
-  ASSERT(args.length() == 1);
-  Object* obj = args[0];
-  return (obj->IsJSObject() && !obj->IsJSGlobalProxy())
-      ? JSObject::cast(obj)->NormalizeProperties(CLEAR_INOBJECT_PROPERTIES, 0)
-      : obj;
-}
-
-
 RUNTIME_FUNCTION(MaybeObject*, Runtime_ToBool) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
@@ -6133,11 +6139,13 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringSplit) {
   RUNTIME_ASSERT(pattern_length > 0);
 
   if (limit == 0xffffffffu) {
-    Handle<Object> cached_answer(StringSplitCache::Lookup(
-        isolate->heap()->string_split_cache(),
+    Handle<Object> cached_answer(RegExpResultsCache::Lookup(
+        isolate->heap(),
         *subject,
-        *pattern));
+        *pattern,
+        RegExpResultsCache::STRING_SPLIT_SUBSTRINGS));
     if (*cached_answer != Smi::FromInt(0)) {
+      // The cache FixedArray is a COW-array and can therefore be reused.
       Handle<JSArray> result =
           isolate->factory()->NewJSArrayWithElements(
               Handle<FixedArray>::cast(cached_answer));
@@ -6197,11 +6205,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringSplit) {
 
   if (limit == 0xffffffffu) {
     if (result->HasFastObjectElements()) {
-      StringSplitCache::Enter(isolate->heap(),
-                              isolate->heap()->string_split_cache(),
-                              *subject,
-                              *pattern,
-                              *elements);
+      RegExpResultsCache::Enter(isolate->heap(),
+                                *subject,
+                                *pattern,
+                                *elements,
+                                RegExpResultsCache::STRING_SPLIT_SUBSTRINGS);
     }
   }
 
@@ -7824,7 +7832,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_NewObject) {
       // instead of a new JSFunction object. This way, errors are
       // reported the same way whether or not 'Function' is called
       // using 'new'.
-      return isolate->context()->global();
+      return isolate->context()->global_object();
     }
   }
 
@@ -7908,7 +7916,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LazyRecompile) {
 
   // If the function is not optimizable or debugger is active continue using the
   // code from the full compiler.
-  if (!function->shared()->code()->optimizable() ||
+  if (!FLAG_crankshaft ||
+      !function->shared()->code()->optimizable() ||
       isolate->DebuggerHasBreakPoints()) {
     if (FLAG_trace_opt) {
       PrintF("[failed to optimize ");
@@ -7969,35 +7978,6 @@ class ActivationsFinder : public ThreadVisitor {
 };
 
 
-static void MaterializeArgumentsObjectInFrame(Isolate* isolate,
-                                              JavaScriptFrame* frame) {
-  Handle<JSFunction> function(JSFunction::cast(frame->function()), isolate);
-  Handle<Object> arguments;
-  for (int i = frame->ComputeExpressionsCount() - 1; i >= 0; --i) {
-    if (frame->GetExpression(i) == isolate->heap()->arguments_marker()) {
-      if (arguments.is_null()) {
-        // FunctionGetArguments can't throw an exception, so cast away the
-        // doubt with an assert.
-        arguments = Handle<Object>(
-            Accessors::FunctionGetArguments(*function,
-                                            NULL)->ToObjectUnchecked());
-        ASSERT(*arguments != isolate->heap()->null_value());
-        ASSERT(*arguments != isolate->heap()->undefined_value());
-      }
-      frame->SetExpression(i, *arguments);
-      if (FLAG_trace_deopt) {
-        PrintF("Materializing arguments object for frame %p - %p: %p ",
-               reinterpret_cast<void*>(frame->sp()),
-               reinterpret_cast<void*>(frame->fp()),
-               reinterpret_cast<void*>(*arguments));
-        arguments->ShortPrint();
-        PrintF("\n");
-      }
-    }
-  }
-}
-
-
 RUNTIME_FUNCTION(MaybeObject*, Runtime_NotifyDeoptimized) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 1);
@@ -8006,25 +7986,16 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_NotifyDeoptimized) {
       static_cast<Deoptimizer::BailoutType>(args.smi_at(0));
   Deoptimizer* deoptimizer = Deoptimizer::Grab(isolate);
   ASSERT(isolate->heap()->IsAllocationAllowed());
-  int jsframes = deoptimizer->jsframe_count();
-
-  deoptimizer->MaterializeHeapNumbers();
-  delete deoptimizer;
-
   JavaScriptFrameIterator it(isolate);
-  for (int i = 0; i < jsframes - 1; i++) {
-    MaterializeArgumentsObjectInFrame(isolate, it.frame());
-    it.Advance();
-  }
+
+  // Make sure to materialize objects before causing any allocation.
+  deoptimizer->MaterializeHeapObjects(&it);
+  delete deoptimizer;
 
   JavaScriptFrame* frame = it.frame();
   RUNTIME_ASSERT(frame->function()->IsJSFunction());
   Handle<JSFunction> function(JSFunction::cast(frame->function()), isolate);
-  MaterializeArgumentsObjectInFrame(isolate, frame);
-
-  if (type == Deoptimizer::EAGER) {
-    RUNTIME_ASSERT(function->IsOptimized());
-  }
+  RUNTIME_ASSERT(type != Deoptimizer::EAGER || function->IsOptimized());
 
   // Avoid doing too much work when running with --always-opt and keep
   // the optimized code around.
@@ -8032,11 +8003,13 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_NotifyDeoptimized) {
     return isolate->heap()->undefined_value();
   }
 
-  // Find other optimized activations of the function.
+  // Find other optimized activations of the function or functions that
+  // share the same optimized code.
   bool has_other_activations = false;
   while (!it.done()) {
     JavaScriptFrame* frame = it.frame();
-    if (frame->is_optimized() && frame->function() == *function) {
+    JSFunction* other_function = JSFunction::cast(frame->function());
+    if (frame->is_optimized() && other_function->code() == function->code()) {
       has_other_activations = true;
       break;
     }
@@ -8382,19 +8355,38 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetConstructorDelegate) {
 }
 
 
+RUNTIME_FUNCTION(MaybeObject*, Runtime_NewGlobalContext) {
+  NoHandleAllocation ha;
+  ASSERT(args.length() == 2);
+
+  CONVERT_ARG_CHECKED(JSFunction, function, 0);
+  CONVERT_ARG_CHECKED(ScopeInfo, scope_info, 1);
+  Context* result;
+  MaybeObject* maybe_result =
+      isolate->heap()->AllocateGlobalContext(function, scope_info);
+  if (!maybe_result->To(&result)) return maybe_result;
+
+  ASSERT(function->context() == isolate->context());
+  ASSERT(function->context()->global_object() == result->global_object());
+  isolate->set_context(result);
+  result->global_object()->set_global_context(result);
+
+  return result;  // non-failure
+}
+
+
 RUNTIME_FUNCTION(MaybeObject*, Runtime_NewFunctionContext) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 1);
 
   CONVERT_ARG_CHECKED(JSFunction, function, 0);
   int length = function->shared()->scope_info()->ContextLength();
-  Object* result;
-  { MaybeObject* maybe_result =
-        isolate->heap()->AllocateFunctionContext(length, function);
-    if (!maybe_result->ToObject(&result)) return maybe_result;
-  }
+  Context* result;
+  MaybeObject* maybe_result =
+      isolate->heap()->AllocateFunctionContext(length, function);
+  if (!maybe_result->To(&result)) return maybe_result;
 
-  isolate->set_context(Context::cast(result));
+  isolate->set_context(result);
 
   return result;  // non-failure
 }
@@ -8427,8 +8419,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_PushWithContext) {
   if (args[1]->IsSmi()) {
     // A smi sentinel indicates a context nested inside global code rather
     // than some function.  There is a canonical empty function that can be
-    // gotten from the global context.
-    function = isolate->context()->global_context()->closure();
+    // gotten from the native context.
+    function = isolate->context()->native_context()->closure();
   } else {
     function = JSFunction::cast(args[1]);
   }
@@ -8453,8 +8445,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_PushCatchContext) {
   if (args[2]->IsSmi()) {
     // A smi sentinel indicates a context nested inside global code rather
     // than some function.  There is a canonical empty function that can be
-    // gotten from the global context.
-    function = isolate->context()->global_context()->closure();
+    // gotten from the native context.
+    function = isolate->context()->native_context()->closure();
   } else {
     function = JSFunction::cast(args[2]);
   }
@@ -8478,8 +8470,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_PushBlockContext) {
   if (args[1]->IsSmi()) {
     // A smi sentinel indicates a context nested inside global code rather
     // than some function.  There is a canonical empty function that can be
-    // gotten from the global context.
-    function = isolate->context()->global_context()->closure();
+    // gotten from the native context.
+    function = isolate->context()->native_context()->closure();
   } else {
     function = JSFunction::cast(args[1]);
   }
@@ -8512,7 +8504,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_PushModuleContext) {
   // Initialize the context links.
   context->set_previous(previous);
   context->set_closure(previous->closure());
-  context->set_global(previous->global());
+  context->set_global_object(previous->global_object());
   isolate->set_context(context);
 
   return context;
@@ -8598,7 +8590,7 @@ static Object* ComputeReceiverForNonGlobal(Isolate* isolate,
   Context* top = isolate->context();
   // Get the context extension function.
   JSFunction* context_extension_function =
-      top->global_context()->context_extension_function();
+      top->native_context()->context_extension_function();
   // If the holder isn't a context extension object, we just return it
   // as the receiver. This allows arguments objects to be used as
   // receivers, but only if they are put in the context scope chain
@@ -8777,7 +8769,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StoreContextSlot) {
     }
     // In non-strict mode, the property is added to the global object.
     attributes = NONE;
-    object = Handle<JSObject>(isolate->context()->global());
+    object = Handle<JSObject>(isolate->context()->global_object());
   }
 
   // Set the property if it's not read only or doesn't yet exist.
@@ -8829,6 +8821,15 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ThrowReferenceError) {
                                           HandleVector(&name, 1));
   return isolate->Throw(*reference_error);
 }
+
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ThrowNotDateError) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 0);
+  return isolate->Throw(*isolate->factory()->NewTypeError(
+      "not_date_object", HandleVector<Object>(NULL, 0)));
+}
+
 
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_StackGuard) {
@@ -9060,18 +9061,20 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CompileString) {
   ASSERT_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, source, 0);
 
-  // Extract global context.
-  Handle<Context> context(isolate->context()->global_context());
+  // Extract native context.
+  Handle<Context> context(isolate->context()->native_context());
 
-  // Check if global context allows code generation from
+  // Check if native context allows code generation from
   // strings. Throw an exception if it doesn't.
   if (context->allow_code_gen_from_strings()->IsFalse() &&
       !CodeGenerationFromStringsAllowed(isolate, context)) {
-    return isolate->Throw(*isolate->factory()->NewError(
-        "code_gen_from_strings", HandleVector<Object>(NULL, 0)));
+    Handle<Object> error_message =
+        context->ErrorMessageForCodeGenerationFromStrings();
+    return isolate->Throw(*isolate->factory()->NewEvalError(
+        "code_gen_from_strings", HandleVector<Object>(&error_message, 1)));
   }
 
-  // Compile source string in the global context.
+  // Compile source string in the native context.
   Handle<SharedFunctionInfo> shared = Compiler::CompileEval(
       source, context, true, CLASSIC_MODE, RelocInfo::kNoPosition);
   if (shared.is_null()) return Failure::Exception();
@@ -9089,14 +9092,16 @@ static ObjectPair CompileGlobalEval(Isolate* isolate,
                                     LanguageMode language_mode,
                                     int scope_position) {
   Handle<Context> context = Handle<Context>(isolate->context());
-  Handle<Context> global_context = Handle<Context>(context->global_context());
+  Handle<Context> native_context = Handle<Context>(context->native_context());
 
-  // Check if global context allows code generation from
+  // Check if native context allows code generation from
   // strings. Throw an exception if it doesn't.
-  if (global_context->allow_code_gen_from_strings()->IsFalse() &&
-      !CodeGenerationFromStringsAllowed(isolate, global_context)) {
-    isolate->Throw(*isolate->factory()->NewError(
-        "code_gen_from_strings", HandleVector<Object>(NULL, 0)));
+  if (native_context->allow_code_gen_from_strings()->IsFalse() &&
+      !CodeGenerationFromStringsAllowed(isolate, native_context)) {
+    Handle<Object> error_message =
+        native_context->ErrorMessageForCodeGenerationFromStrings();
+    isolate->Throw(*isolate->factory()->NewEvalError(
+        "code_gen_from_strings", HandleVector<Object>(&error_message, 1)));
     return MakePair(Failure::Exception(), NULL);
   }
 
@@ -9105,7 +9110,7 @@ static ObjectPair CompileGlobalEval(Isolate* isolate,
   Handle<SharedFunctionInfo> shared = Compiler::CompileEval(
       source,
       Handle<Context>(isolate->context()),
-      context->IsGlobalContext(),
+      context->IsNativeContext(),
       language_mode,
       scope_position);
   if (shared.is_null()) return MakePair(Failure::Exception(), NULL);
@@ -9127,7 +9132,7 @@ RUNTIME_FUNCTION(ObjectPair, Runtime_ResolvePossiblyDirectEval) {
   // (And even if it is, but the first argument isn't a string, just let
   // execution default to an indirect call to eval, which will also return
   // the first argument without doing anything).
-  if (*callee != isolate->global_context()->global_eval_fun() ||
+  if (*callee != isolate->native_context()->global_eval_fun() ||
       !args[1]->IsString()) {
     return MakePair(*callee, isolate->heap()->the_hole_value());
   }
@@ -10103,7 +10108,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugGetPropertyDetails) {
   // entered (if the debugger is entered). The reason for switching context here
   // is that for some property lookups (accessors and interceptors) callbacks
   // into the embedding application can occour, and the embedding application
-  // could have the assumption that its own global context is the current
+  // could have the assumption that its own native context is the current
   // context and not some internal debugger context.
   SaveContext save(isolate);
   if (isolate->debug()->InDebugger()) {
@@ -10229,7 +10234,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugPropertyAttributesFromDetails) {
 RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugPropertyIndexFromDetails) {
   ASSERT(args.length() == 1);
   CONVERT_PROPERTY_DETAILS_CHECKED(details, 0);
-  return Smi::FromInt(details.index());
+  // TODO(verwaest): Depends on the type of details.
+  return Smi::FromInt(details.dictionary_index());
 }
 
 
@@ -10648,12 +10654,12 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFrameDetails) {
     // value object is not converted into a wrapped JS objects. To
     // hide this optimization from the debugger, we wrap the receiver
     // by creating correct wrapper object based on the calling frame's
-    // global context.
+    // native context.
     it.Advance();
-    Handle<Context> calling_frames_global_context(
-        Context::cast(Context::cast(it.frame()->context())->global_context()));
+    Handle<Context> calling_frames_native_context(
+        Context::cast(Context::cast(it.frame()->context())->native_context()));
     receiver =
-        isolate->factory()->ToObject(receiver, calling_frames_global_context);
+        isolate->factory()->ToObject(receiver, calling_frames_native_context);
   }
   details->set(kFrameDetailsReceiverIndex, *receiver);
 
@@ -10745,7 +10751,7 @@ static Handle<JSObject> MaterializeLocalScopeWithFrameInspector(
     // These will be variables introduced by eval.
     if (function_context->closure() == *function) {
       if (function_context->has_extension() &&
-          !function_context->IsGlobalContext()) {
+          !function_context->IsNativeContext()) {
         Handle<JSObject> ext(JSObject::cast(function_context->extension()));
         bool threw = false;
         Handle<FixedArray> keys =
@@ -10919,7 +10925,8 @@ class ScopeIterator {
       inlined_jsframe_index_(inlined_jsframe_index),
       function_(JSFunction::cast(frame->function())),
       context_(Context::cast(frame->context())),
-      nested_scope_chain_(4) {
+      nested_scope_chain_(4),
+      failed_(false) {
 
     // Catch the case when the debugger stops in an internal function.
     Handle<SharedFunctionInfo> shared_info(function_->shared());
@@ -10970,7 +10977,7 @@ class ScopeIterator {
         } else {
           ASSERT(scope_info->Type() == EVAL_SCOPE);
           info.MarkAsEval();
-          info.SetCallingContext(Handle<Context>(function_->context()));
+          info.SetContext(Handle<Context>(function_->context()));
         }
         if (ParserApi::Parse(&info, kNoParsingFlags) && Scope::Analyze(&info)) {
           scope = info.function()->scope();
@@ -10993,21 +11000,28 @@ class ScopeIterator {
       frame_(NULL),
       inlined_jsframe_index_(0),
       function_(function),
-      context_(function->context()) {
+      context_(function->context()),
+      failed_(false) {
     if (function->IsBuiltin()) {
       context_ = Handle<Context>();
     }
   }
 
   // More scopes?
-  bool Done() { return context_.is_null(); }
+  bool Done() {
+    ASSERT(!failed_);
+    return context_.is_null();
+  }
+
+  bool Failed() { return failed_; }
 
   // Move to the next scope.
   void Next() {
+    ASSERT(!failed_);
     ScopeType scope_type = Type();
     if (scope_type == ScopeTypeGlobal) {
       // The global scope is always the last in the chain.
-      ASSERT(context_->IsGlobalContext());
+      ASSERT(context_->IsNativeContext());
       context_ = Handle<Context>();
       return;
     }
@@ -11024,6 +11038,7 @@ class ScopeIterator {
 
   // Return the type of the current scope.
   ScopeType Type() {
+    ASSERT(!failed_);
     if (!nested_scope_chain_.is_empty()) {
       Handle<ScopeInfo> scope_info = nested_scope_chain_.last();
       switch (scope_info->Type()) {
@@ -11035,7 +11050,7 @@ class ScopeIterator {
           ASSERT(context_->IsModuleContext());
           return ScopeTypeModule;
         case GLOBAL_SCOPE:
-          ASSERT(context_->IsGlobalContext());
+          ASSERT(context_->IsNativeContext());
           return ScopeTypeGlobal;
         case WITH_SCOPE:
           ASSERT(context_->IsWithContext());
@@ -11051,8 +11066,8 @@ class ScopeIterator {
           UNREACHABLE();
       }
     }
-    if (context_->IsGlobalContext()) {
-      ASSERT(context_->global()->IsGlobalObject());
+    if (context_->IsNativeContext()) {
+      ASSERT(context_->global_object()->IsGlobalObject());
       return ScopeTypeGlobal;
     }
     if (context_->IsFunctionContext()) {
@@ -11073,9 +11088,10 @@ class ScopeIterator {
 
   // Return the JavaScript object with the content of the current scope.
   Handle<JSObject> ScopeObject() {
+    ASSERT(!failed_);
     switch (Type()) {
       case ScopeIterator::ScopeTypeGlobal:
-        return Handle<JSObject>(CurrentContext()->global());
+        return Handle<JSObject>(CurrentContext()->global_object());
       case ScopeIterator::ScopeTypeLocal:
         // Materialize the content of the local scope into a JSObject.
         ASSERT(nested_scope_chain_.length() == 1);
@@ -11098,6 +11114,7 @@ class ScopeIterator {
   }
 
   Handle<ScopeInfo> CurrentScopeInfo() {
+    ASSERT(!failed_);
     if (!nested_scope_chain_.is_empty()) {
       return nested_scope_chain_.last();
     } else if (context_->IsBlockContext()) {
@@ -11111,6 +11128,7 @@ class ScopeIterator {
   // Return the context for this scope. For the local context there might not
   // be an actual context.
   Handle<Context> CurrentContext() {
+    ASSERT(!failed_);
     if (Type() == ScopeTypeGlobal ||
         nested_scope_chain_.is_empty()) {
       return context_;
@@ -11124,6 +11142,7 @@ class ScopeIterator {
 #ifdef DEBUG
   // Debug print of the content of the current scope.
   void DebugPrint() {
+    ASSERT(!failed_);
     switch (Type()) {
       case ScopeIterator::ScopeTypeGlobal:
         PrintF("Global:\n");
@@ -11181,6 +11200,7 @@ class ScopeIterator {
   Handle<JSFunction> function_;
   Handle<Context> context_;
   List<Handle<ScopeInfo> > nested_scope_chain_;
+  bool failed_;
 
   void RetrieveScopeChain(Scope* scope,
                           Handle<SharedFunctionInfo> shared_info) {
@@ -11193,7 +11213,9 @@ class ScopeIterator {
       // faulty. We fail in debug mode but in release mode we only provide the
       // information we get from the context chain but nothing about
       // completely stack allocated scopes or stack allocated locals.
-      UNREACHABLE();
+      // Or it could be due to stack overflow.
+      ASSERT(isolate_->has_pending_exception());
+      failed_ = true;
     }
   }
 
@@ -11458,115 +11480,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetBreakLocations) {
 }
 
 
-Object* Runtime::FindSharedFunctionInfoInScript(Isolate* isolate,
-                                                Handle<Script> script,
-                                                int position) {
-  // The below fix-point iteration depends on all functions that cannot be
-  // compiled lazily without a context to not be compiled at all. Compilation
-  // will be triggered at points where we do not need a context.
-  isolate->debug()->PrepareForBreakPoints();
-
-  // Iterate the heap looking for SharedFunctionInfo generated from the
-  // script. The inner most SharedFunctionInfo containing the source position
-  // for the requested break point is found.
-  // NOTE: This might require several heap iterations. If the SharedFunctionInfo
-  // which is found is not compiled it is compiled and the heap is iterated
-  // again as the compilation might create inner functions from the newly
-  // compiled function and the actual requested break point might be in one of
-  // these functions.
-  bool done = false;
-  // The current candidate for the source position:
-  int target_start_position = RelocInfo::kNoPosition;
-  Handle<JSFunction> target_function;
-  Handle<SharedFunctionInfo> target;
-  while (!done) {
-    { // Extra scope for iterator and no-allocation.
-      isolate->heap()->EnsureHeapIsIterable();
-      AssertNoAllocation no_alloc_during_heap_iteration;
-      HeapIterator iterator;
-      for (HeapObject* obj = iterator.next();
-           obj != NULL; obj = iterator.next()) {
-        bool found_next_candidate = false;
-        Handle<JSFunction> function;
-        Handle<SharedFunctionInfo> shared;
-        if (obj->IsJSFunction()) {
-          function = Handle<JSFunction>(JSFunction::cast(obj));
-          shared = Handle<SharedFunctionInfo>(function->shared());
-          ASSERT(shared->allows_lazy_compilation() || shared->is_compiled());
-          found_next_candidate = true;
-        } else if (obj->IsSharedFunctionInfo()) {
-          shared = Handle<SharedFunctionInfo>(SharedFunctionInfo::cast(obj));
-          // Skip functions that we cannot compile lazily without a context,
-          // which is not available here, because there is no closure.
-          found_next_candidate = shared->is_compiled() ||
-              shared->allows_lazy_compilation_without_context();
-        }
-        if (!found_next_candidate) continue;
-        if (shared->script() == *script) {
-          // If the SharedFunctionInfo found has the requested script data and
-          // contains the source position it is a candidate.
-          int start_position = shared->function_token_position();
-          if (start_position == RelocInfo::kNoPosition) {
-            start_position = shared->start_position();
-          }
-          if (start_position <= position &&
-              position <= shared->end_position()) {
-            // If there is no candidate or this function is within the current
-            // candidate this is the new candidate.
-            if (target.is_null()) {
-              target_start_position = start_position;
-              target_function = function;
-              target = shared;
-            } else {
-              if (target_start_position == start_position &&
-                  shared->end_position() == target->end_position()) {
-                // If a top-level function contains only one function
-                // declaration the source for the top-level and the function
-                // is the same. In that case prefer the non top-level function.
-                if (!shared->is_toplevel()) {
-                  target_start_position = start_position;
-                  target_function = function;
-                  target = shared;
-                }
-              } else if (target_start_position <= start_position &&
-                         shared->end_position() <= target->end_position()) {
-                // This containment check includes equality as a function
-                // inside a top-level function can share either start or end
-                // position with the top-level function.
-                target_start_position = start_position;
-                target_function = function;
-                target = shared;
-              }
-            }
-          }
-        }
-      }  // End for loop.
-    }  // End no-allocation scope.
-
-    if (target.is_null()) {
-      return isolate->heap()->undefined_value();
-    }
-
-    // If the candidate found is compiled we are done.
-    done = target->is_compiled();
-    if (!done) {
-      // If the candidate is not compiled, compile it to reveal any inner
-      // functions which might contain the requested source position. This
-      // will compile all inner functions that cannot be compiled without a
-      // context, because Compiler::BuildFunctionInfo checks whether the
-      // debugger is active.
-      if (target_function.is_null()) {
-        SharedFunctionInfo::CompileLazy(target, KEEP_EXCEPTION);
-      } else {
-        JSFunction::CompileLazy(target_function, KEEP_EXCEPTION);
-      }
-    }
-  }  // End while loop.
-
-  return *target;
-}
-
-
 // Set a break point in a function.
 // args[0]: function
 // args[1]: number: break source position (within the function source)
@@ -11727,6 +11640,8 @@ static Handle<Context> CopyNestedScopeContextChain(Isolate* isolate,
   List<Handle<Context> > context_chain;
 
   ScopeIterator it(isolate, frame, inlined_jsframe_index);
+  if (it.Failed()) return Handle<Context>::null();
+
   for (; it.Type() != ScopeIterator::ScopeTypeGlobal &&
          it.Type() != ScopeIterator::ScopeTypeLocal ; it.Next()) {
     ASSERT(!it.Done());
@@ -11755,9 +11670,7 @@ static Handle<Context> CopyNestedScopeContextChain(Isolate* isolate,
       // Materialize the contents of the block scope into a JSObject.
       Handle<JSObject> block_scope_object =
           MaterializeBlockScope(isolate, current);
-      if (block_scope_object.is_null()) {
-        return Handle<Context>::null();
-      }
+      CHECK(!block_scope_object.is_null());
       // Allocate a new function context for the debug evaluation and set the
       // extension object.
       Handle<Context> new_context =
@@ -11918,6 +11831,12 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluate) {
                                         context,
                                         frame,
                                         inlined_jsframe_index);
+  if (context.is_null()) {
+    ASSERT(isolate->has_pending_exception());
+    MaybeObject* exception = isolate->pending_exception();
+    isolate->clear_pending_exception();
+    return exception;
+  }
 
   if (additional_context->IsJSObject()) {
     Handle<JSObject> extension = Handle<JSObject>::cast(additional_context);
@@ -11940,7 +11859,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluate) {
   Handle<SharedFunctionInfo> shared =
       Compiler::CompileEval(function_source,
                             context,
-                            context->IsGlobalContext(),
+                            context->IsNativeContext(),
                             CLASSIC_MODE,
                             RelocInfo::kNoPosition);
   if (shared.is_null()) return Failure::Exception();
@@ -11961,6 +11880,15 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluate) {
                                                 scope_info,
                                                 function_context);
 
+  // Check if eval is blocked in the context and temporarily allow it
+  // for debugger.
+  Handle<Context> native_context = Handle<Context>(context->native_context());
+  bool eval_disabled =
+      native_context->allow_code_gen_from_strings()->IsFalse();
+  if (eval_disabled) {
+    native_context->set_allow_code_gen_from_strings(
+        isolate->heap()->true_value());
+  }
   // Invoke the evaluation function and return the result.
   Handle<Object> argv[] = { arguments, source };
   Handle<Object> result =
@@ -11969,6 +11897,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluate) {
                       ARRAY_SIZE(argv),
                       argv,
                       &has_pending_exception);
+  if (eval_disabled) {
+    native_context->set_allow_code_gen_from_strings(
+        isolate->heap()->false_value());
+  }
   if (has_pending_exception) return Failure::Exception();
 
   // Skip the global proxy as it has no properties and always delegates to the
@@ -12011,9 +11943,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluateGlobal) {
     isolate->set_context(*top->context());
   }
 
-  // Get the global context now set to the top context from before the
+  // Get the native context now set to the top context from before the
   // debugger was invoked.
-  Handle<Context> context = isolate->global_context();
+  Handle<Context> context = isolate->native_context();
 
   bool is_global = true;
 
@@ -12044,7 +11976,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluateGlobal) {
 
   // Invoke the result of the compilation to get the evaluation function.
   bool has_pending_exception;
-  Handle<Object> receiver = isolate->global();
+  Handle<Object> receiver = isolate->global_object();
   Handle<Object> result =
     Execution::Call(compiled_function, receiver, 0, NULL,
                     &has_pending_exception);
@@ -12178,7 +12110,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugReferencedBy) {
 
   // Get the constructor function for context extension and arguments array.
   JSObject* arguments_boilerplate =
-      isolate->context()->global_context()->arguments_boilerplate();
+      isolate->context()->native_context()->arguments_boilerplate();
   JSFunction* arguments_function =
       JSFunction::cast(arguments_boilerplate->map()->constructor());
 
@@ -12207,7 +12139,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugReferencedBy) {
   // Return result as JS array.
   Object* result;
   MaybeObject* maybe_result = isolate->heap()->AllocateJSObject(
-      isolate->context()->global_context()->array_function());
+      isolate->context()->native_context()->array_function());
   if (!maybe_result->ToObject(&result)) return maybe_result;
   return JSArray::cast(result)->SetContent(instances);
 }
@@ -12288,7 +12220,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugConstructedBy) {
   // Return result as JS array.
   Object* result;
   { MaybeObject* maybe_result = isolate->heap()->AllocateJSObject(
-          isolate->context()->global_context()->array_function());
+          isolate->context()->native_context()->array_function());
     if (!maybe_result->ToObject(&result)) return maybe_result;
   }
   return JSArray::cast(result)->SetContent(instances);
@@ -12313,7 +12245,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugSetScriptSource) {
   ASSERT(args.length() == 2);
 
   CONVERT_ARG_HANDLE_CHECKED(JSValue, script_wrapper, 0);
-  Handle<String> source(String::cast(args[1]));
+  CONVERT_ARG_HANDLE_CHECKED(String, source, 1);
 
   RUNTIME_ASSERT(script_wrapper->value()->IsScript());
   Handle<Script> script(Script::cast(script_wrapper->value()));
@@ -12402,11 +12334,12 @@ static int FindSharedFunctionInfosForScript(HeapIterator* iterator,
 // in OpaqueReferences.
 RUNTIME_FUNCTION(MaybeObject*,
                  Runtime_LiveEditFindSharedFunctionInfosForScript) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 1);
   HandleScope scope(isolate);
   CONVERT_ARG_CHECKED(JSValue, script_value, 0);
 
-
+  RUNTIME_ASSERT(script_value->value()->IsScript());
   Handle<Script> script = Handle<Script>(Script::cast(script_value->value()));
 
   const int kBufferSize = 32;
@@ -12448,10 +12381,13 @@ RUNTIME_FUNCTION(MaybeObject*,
 // each function with all its descendant is always stored in a continues range
 // with the function itself going first. The root function is a script function.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditGatherCompileInfo) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   CONVERT_ARG_CHECKED(JSValue, script, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, source, 1);
+
+  RUNTIME_ASSERT(script->value()->IsScript());
   Handle<Script> script_handle = Handle<Script>(Script::cast(script->value()));
 
   JSArray* result =  LiveEdit::GatherCompileInfo(script_handle, source);
@@ -12467,6 +12403,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditGatherCompileInfo) {
 // If old_script_name is provided (i.e. is a String), also creates a copy of
 // the script with its original source and sends notification to debugger.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditReplaceScript) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 3);
   HandleScope scope(isolate);
   CONVERT_ARG_CHECKED(JSValue, original_script_value, 0);
@@ -12490,6 +12427,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditReplaceScript) {
 
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditFunctionSourceUpdated) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 1);
   HandleScope scope(isolate);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, shared_info, 0);
@@ -12499,6 +12437,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditFunctionSourceUpdated) {
 
 // Replaces code of SharedFunctionInfo with a new one.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditReplaceFunctionCode) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, new_compile_info, 0);
@@ -12509,6 +12448,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditReplaceFunctionCode) {
 
 // Connects SharedFunctionInfo to another script.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditFunctionSetScript) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   Handle<Object> function_object(args[0], isolate);
@@ -12535,6 +12475,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditFunctionSetScript) {
 // In a code of a parent function replaces original function as embedded object
 // with a substitution one.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditReplaceRefToNestedFunction) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 3);
   HandleScope scope(isolate);
 
@@ -12555,6 +12496,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditReplaceRefToNestedFunction) {
 // (change_begin, change_end, change_end_new_position).
 // Each group describes a change in text; groups are sorted by change_begin.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditPatchFunctionPositions) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, shared_array, 0);
@@ -12569,6 +12511,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditPatchFunctionPositions) {
 // Returns array of the same length with corresponding results of
 // LiveEdit::FunctionPatchabilityStatus type.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditCheckAndDropActivations) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, shared_array, 0);
@@ -12582,6 +12525,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditCheckAndDropActivations) {
 // of JSArray of triplets (pos1, pos1_end, pos2_end) describing list
 // of diff chunks.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditCompareStrings) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   CONVERT_ARG_HANDLE_CHECKED(String, s1, 0);
@@ -12594,6 +12538,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditCompareStrings) {
 // Restarts a call frame and completely drops all frames above.
 // Returns true if successful. Otherwise returns undefined or an error message.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditRestartFrame) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
 
@@ -12633,6 +12578,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_LiveEditRestartFrame) {
 // A testing entry. Returns statement position which is the closest to
 // source_position.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFunctionCodePositionFromSource) {
+  CHECK(isolate->debugger()->live_edit_enabled());
   ASSERT(args.length() == 2);
   HandleScope scope(isolate);
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
@@ -12679,11 +12625,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ExecuteInDebugContext) {
   bool pending_exception;
   {
     if (without_debugger) {
-      result = Execution::Call(function, isolate->global(), 0, NULL,
+      result = Execution::Call(function, isolate->global_object(), 0, NULL,
                                &pending_exception);
     } else {
       EnterDebugger enter_debugger;
-      result = Execution::Call(function, isolate->global(), 0, NULL,
+      result = Execution::Call(function, isolate->global_object(), 0, NULL,
                                &pending_exception);
     }
   }
@@ -13162,7 +13108,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFromCache) {
     Handle<JSFunction> factory(JSFunction::cast(
           cache_handle->get(JSFunctionResultCache::kFactoryIndex)));
     // TODO(antonm): consider passing a receiver when constructing a cache.
-    Handle<Object> receiver(isolate->global_context()->global());
+    Handle<Object> receiver(isolate->native_context()->global_object());
     // This handle is nor shared, nor used later, so it's safe.
     Handle<Object> argv[] = { key_handle };
     bool pending_exception;
@@ -13174,7 +13120,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFromCache) {
     if (pending_exception) return Failure::Exception();
   }
 
-#ifdef DEBUG
+#ifdef VERIFY_HEAP
   if (FLAG_verify_heap) {
     cache_handle->JSFunctionResultCacheVerify();
   }
@@ -13205,7 +13151,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFromCache) {
   cache_handle->set(index + 1, *value);
   cache_handle->set_finger_index(index);
 
-#ifdef DEBUG
+#ifdef VERIFY_HEAP
   if (FLAG_verify_heap) {
     cache_handle->JSFunctionResultCacheVerify();
   }

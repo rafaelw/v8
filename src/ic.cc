@@ -320,12 +320,16 @@ void IC::PostPatching(Address address, Code* target, Code* old_target) {
     int delta = ComputeTypeInfoCountDelta(old_target->ic_state(),
                                           target->ic_state());
     // Not all Code objects have TypeFeedbackInfo.
-    if (delta != 0 && host->type_feedback_info()->IsTypeFeedbackInfo()) {
+    if (host->type_feedback_info()->IsTypeFeedbackInfo() && delta != 0) {
       TypeFeedbackInfo* info =
           TypeFeedbackInfo::cast(host->type_feedback_info());
-      info->set_ic_with_type_info_count(
-          info->ic_with_type_info_count() + delta);
+      info->change_ic_with_type_info_count(delta);
     }
+  }
+  if (host->type_feedback_info()->IsTypeFeedbackInfo()) {
+    TypeFeedbackInfo* info =
+        TypeFeedbackInfo::cast(host->type_feedback_info());
+    info->change_own_type_change_checksum();
   }
   if (FLAG_watch_ic_patching) {
     host->set_profiler_ticks(0);
@@ -996,6 +1000,7 @@ void LoadIC::UpdateCaches(LookupResult* lookup,
           Handle<Object> getter(Handle<AccessorPair>::cast(callback)->getter());
           if (!getter->IsJSFunction()) return;
           if (holder->IsGlobalObject()) return;
+          if (!holder->HasFastProperties()) return;
           code = isolate()->stub_cache()->ComputeLoadViaGetter(
               name, receiver, holder, Handle<JSFunction>::cast(getter));
         } else {
@@ -1264,7 +1269,6 @@ void KeyedLoadIC::UpdateCaches(LookupResult* lookup,
         Handle<AccessorInfo> callback =
             Handle<AccessorInfo>::cast(callback_object);
         if (v8::ToCData<Address>(callback->getter()) == 0) return;
-        if (!holder->HasFastProperties()) return;
         if (!callback->IsCompatibleReceiver(*receiver)) return;
         code = isolate()->stub_cache()->ComputeKeyedLoadCallback(
             name, receiver, holder, callback);
@@ -1319,15 +1323,9 @@ static bool LookupForWrite(Handle<JSObject> receiver,
     receiver->map()->LookupTransition(*receiver, *name, lookup);
   }
   if (!StoreICableLookup(lookup)) {
-    // 2nd chance: There can be accessors somewhere in the prototype chain. Note
-    // that we explicitly exclude native accessors for now, because the stubs
-    // are not yet prepared for this scenario.
+    // 2nd chance: There can be accessors somewhere in the prototype chain.
     receiver->Lookup(*name, lookup);
-    if (!lookup->IsPropertyCallbacks()) {
-      return false;
-    }
-    Handle<Object> callback(lookup->GetCallbackObject());
-    return callback->IsAccessorPair() && StoreICableLookup(lookup);
+    return lookup->IsPropertyCallbacks() && StoreICableLookup(lookup);
   }
 
   if (lookup->IsInterceptor() &&
@@ -1487,13 +1485,12 @@ void StoreIC::UpdateCaches(LookupResult* lookup,
     case CALLBACKS: {
       Handle<Object> callback(lookup->GetCallbackObject());
       if (callback->IsAccessorInfo()) {
-        ASSERT(*holder == *receiver);  // LookupForWrite checks this.
         Handle<AccessorInfo> info = Handle<AccessorInfo>::cast(callback);
         if (v8::ToCData<Address>(info->setter()) == 0) return;
         if (!holder->HasFastProperties()) return;
-        ASSERT(info->IsCompatibleReceiver(*receiver));
+        if (!info->IsCompatibleReceiver(*receiver)) return;
         code = isolate()->stub_cache()->ComputeStoreCallback(
-            name, receiver, info, strict_mode);
+            name, receiver, holder, info, strict_mode);
       } else if (callback->IsAccessorPair()) {
         Handle<Object> setter(Handle<AccessorPair>::cast(callback)->setter());
         if (!setter->IsJSFunction()) return;

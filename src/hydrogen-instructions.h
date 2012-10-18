@@ -53,6 +53,7 @@ class LChunkBuilder;
 
 
 #define HYDROGEN_ABSTRACT_INSTRUCTION_LIST(V)  \
+  V(BinaryOperation)                           \
   V(BitwiseBinaryOperation)                    \
   V(ControlInstruction)                        \
   V(Instruction)                               \
@@ -139,6 +140,7 @@ class LChunkBuilder;
   V(LoadNamedField)                            \
   V(LoadNamedFieldPolymorphic)                 \
   V(LoadNamedGeneric)                          \
+  V(MapEnumLength)                             \
   V(MathFloorOfDiv)                            \
   V(MathMinMax)                                \
   V(Mod)                                       \
@@ -562,7 +564,14 @@ class HValue: public ZoneObject {
     kIsArguments,
     kTruncatingToInt32,
     kIsDead,
-    kLastFlag = kIsDead
+    // Instructions that are allowed to produce full range unsigned integer
+    // values are marked with kUint32 flag. If arithmetic shift or a load from
+    // EXTERNAL_UNSIGNED_INT_ELEMENTS array is not marked with this flag
+    // it will deoptimize if result does not fit into signed integer range.
+    // HGraph::ComputeSafeUint32Operations is responsible for setting this
+    // flag.
+    kUint32,
+    kLastFlag = kUint32
   };
 
   STATIC_ASSERT(kLastFlag < kBitsPerInt);
@@ -658,7 +667,7 @@ class HValue: public ZoneObject {
 
   // Operands.
   virtual int OperandCount() = 0;
-  virtual HValue* OperandAt(int index) = 0;
+  virtual HValue* OperandAt(int index) const = 0;
   void SetOperandAt(int index, HValue* value);
 
   void DeleteAndReplaceWith(HValue* other);
@@ -769,6 +778,10 @@ class HValue: public ZoneObject {
     UNREACHABLE();
   }
 
+  bool IsDead() const {
+    return HasNoUses() && !HasObservableSideEffects() && IsDeletable();
+  }
+
 #ifdef DEBUG
   virtual void Verify() = 0;
 #endif
@@ -853,6 +866,8 @@ class HValue: public ZoneObject {
   GVNFlagSet gvn_flags_;
 
  private:
+  virtual bool IsDeletable() const { return false; }
+
   DISALLOW_COPY_AND_ASSIGN(HValue);
 };
 
@@ -921,7 +936,7 @@ template<int V>
 class HTemplateInstruction : public HInstruction {
  public:
   int OperandCount() { return V; }
-  HValue* OperandAt(int i) { return inputs_[i]; }
+  HValue* OperandAt(int i) const { return inputs_[i]; }
 
  protected:
   void InternalSetOperandAt(int i, HValue* value) { inputs_[i] = value; }
@@ -973,7 +988,7 @@ class HTemplateControlInstruction: public HControlInstruction {
   void SetSuccessorAt(int i, HBasicBlock* block) { successors_[i] = block; }
 
   int OperandCount() { return V; }
-  HValue* OperandAt(int i) { return inputs_[i]; }
+  HValue* OperandAt(int i) const { return inputs_[i]; }
 
 
  protected:
@@ -1018,7 +1033,7 @@ class HDeoptimize: public HControlInstruction {
   }
 
   virtual int OperandCount() { return values_.length(); }
-  virtual HValue* OperandAt(int index) { return values_[index]; }
+  virtual HValue* OperandAt(int index) const { return values_[index]; }
   virtual void PrintDataTo(StringStream* stream);
 
   virtual int SuccessorCount() { return 0; }
@@ -1179,7 +1194,7 @@ class HUnaryOperation: public HTemplateInstruction<1> {
     return reinterpret_cast<HUnaryOperation*>(value);
   }
 
-  HValue* value() { return OperandAt(0); }
+  HValue* value() const { return OperandAt(0); }
   virtual void PrintDataTo(StringStream* stream);
 };
 
@@ -1255,8 +1270,8 @@ class HChange: public HUnaryOperation {
   virtual HType CalculateInferredType();
   virtual HValue* Canonicalize();
 
-  Representation from() { return value()->representation(); }
-  Representation to() { return representation(); }
+  Representation from() const { return value()->representation(); }
+  Representation to() const { return representation(); }
   bool deoptimize_on_undefined() const {
     return CheckFlag(kDeoptimizeOnUndefined);
   }
@@ -1275,6 +1290,11 @@ class HChange: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const {
+    return !from().IsTagged() || value()->type().IsSmi();
+  }
 };
 
 
@@ -1294,6 +1314,9 @@ class HClampToUint8: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1332,7 +1355,7 @@ class HSimulate: public HInstruction {
     AddValue(kNoIndex, value);
   }
   virtual int OperandCount() { return values_.length(); }
-  virtual HValue* OperandAt(int index) { return values_[index]; }
+  virtual HValue* OperandAt(int index) const { return values_[index]; }
 
   virtual Representation RequiredInputRepresentation(int index) {
     return Representation::None();
@@ -1403,20 +1426,30 @@ class HStackCheck: public HTemplateInstruction<1> {
 };
 
 
+enum InliningKind {
+  NORMAL_RETURN,          // Normal function/method call and return.
+  DROP_EXTRA_ON_RETURN,   // Drop an extra value from the environment on return.
+  CONSTRUCT_CALL_RETURN,  // Either use allocated receiver or return value.
+  GETTER_CALL_RETURN,     // Returning from a getter, need to restore context.
+  SETTER_CALL_RETURN      // Use the RHS of the assignment as the return value.
+};
+
+
 class HEnterInlined: public HTemplateInstruction<0> {
  public:
   HEnterInlined(Handle<JSFunction> closure,
                 int arguments_count,
                 FunctionLiteral* function,
                 CallKind call_kind,
-                bool is_construct,
+                InliningKind inlining_kind,
                 Variable* arguments_var,
                 ZoneList<HValue*>* arguments_values)
       : closure_(closure),
         arguments_count_(arguments_count),
+        arguments_pushed_(false),
         function_(function),
         call_kind_(call_kind),
-        is_construct_(is_construct),
+        inlining_kind_(inlining_kind),
         arguments_var_(arguments_var),
         arguments_values_(arguments_values) {
   }
@@ -1425,9 +1458,11 @@ class HEnterInlined: public HTemplateInstruction<0> {
 
   Handle<JSFunction> closure() const { return closure_; }
   int arguments_count() const { return arguments_count_; }
+  bool arguments_pushed() const { return arguments_pushed_; }
+  void set_arguments_pushed() { arguments_pushed_ = true; }
   FunctionLiteral* function() const { return function_; }
   CallKind call_kind() const { return call_kind_; }
-  bool is_construct() const { return is_construct_; }
+  InliningKind inlining_kind() const { return inlining_kind_; }
 
   virtual Representation RequiredInputRepresentation(int index) {
     return Representation::None();
@@ -1441,9 +1476,10 @@ class HEnterInlined: public HTemplateInstruction<0> {
  private:
   Handle<JSFunction> closure_;
   int arguments_count_;
+  bool arguments_pushed_;
   FunctionLiteral* function_;
   CallKind call_kind_;
-  bool is_construct_;
+  InliningKind inlining_kind_;
   Variable* arguments_var_;
   ZoneList<HValue*>* arguments_values_;
 };
@@ -1451,21 +1487,13 @@ class HEnterInlined: public HTemplateInstruction<0> {
 
 class HLeaveInlined: public HTemplateInstruction<0> {
  public:
-  explicit HLeaveInlined(bool arguments_pushed)
-      : arguments_pushed_(arguments_pushed) { }
+  HLeaveInlined() { }
 
   virtual Representation RequiredInputRepresentation(int index) {
     return Representation::None();
   }
 
-  bool arguments_pushed() {
-    return arguments_pushed_;
-  }
-
   DECLARE_CONCRETE_INSTRUCTION(LeaveInlined)
-
- private:
-  bool arguments_pushed_;
 };
 
 
@@ -1500,6 +1528,9 @@ class HThisFunction: public HTemplateInstruction<0> {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1518,6 +1549,9 @@ class HContext: public HTemplateInstruction<0> {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1536,6 +1570,9 @@ class HOuterContext: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1581,6 +1618,9 @@ class HGlobalObject: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1600,6 +1640,9 @@ class HGlobalReceiver: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1885,6 +1928,9 @@ class HJSArrayLength: public HTemplateInstruction<2> {
 
  protected:
   virtual bool DataEquals(HValue* other_raw) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1905,6 +1951,32 @@ class HFixedArrayBaseLength: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
+};
+
+
+class HMapEnumLength: public HUnaryOperation {
+ public:
+  explicit HMapEnumLength(HValue* value) : HUnaryOperation(value) {
+    set_type(HType::Smi());
+    set_representation(Representation::Tagged());
+    SetFlag(kUseGVN);
+    SetGVNFlag(kDependsOnMaps);
+  }
+
+  virtual Representation RequiredInputRepresentation(int index) {
+    return Representation::Tagged();
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(MapEnumLength)
+
+ protected:
+  virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1924,6 +1996,9 @@ class HElementsKind: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -1946,6 +2021,9 @@ class HBitNot: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -2028,17 +2106,26 @@ class HUnaryMathOperation: public HTemplateInstruction<2> {
   }
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   BuiltinFunctionId op_;
 };
 
 
-class HLoadElements: public HUnaryOperation {
+class HLoadElements: public HTemplateInstruction<2> {
  public:
-  explicit HLoadElements(HValue* value) : HUnaryOperation(value) {
+  HLoadElements(HValue* value, HValue* typecheck) {
+    SetOperandAt(0, value);
+    SetOperandAt(1, typecheck);
     set_representation(Representation::Tagged());
     SetFlag(kUseGVN);
     SetGVNFlag(kDependsOnElementsPointer);
   }
+
+  HValue* value() { return OperandAt(0); }
+  HValue* typecheck() { return OperandAt(1); }
+
+  virtual void PrintDataTo(StringStream* stream);
 
   virtual Representation RequiredInputRepresentation(int index) {
     return Representation::Tagged();
@@ -2048,6 +2135,9 @@ class HLoadElements: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -2071,6 +2161,9 @@ class HLoadExternalArrayPointer: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -2370,7 +2463,7 @@ class HPhi: public HValue {
   }
   virtual HType CalculateInferredType();
   virtual int OperandCount() { return inputs_.length(); }
-  virtual HValue* OperandAt(int index) { return inputs_[index]; }
+  virtual HValue* OperandAt(int index) const { return inputs_[index]; }
   HValue* GetRedundantReplacement();
   void AddInput(HValue* value);
   bool HasRealUses();
@@ -2466,6 +2559,9 @@ class HArgumentsObject: public HTemplateInstruction<0> {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(ArgumentsObject)
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -2548,6 +2644,10 @@ class HConstant: public HTemplateInstruction<0> {
 
   bool ToBoolean();
 
+  bool IsUint32() {
+    return HasInteger32Value() && (Integer32Value() >= 0);
+  }
+
   virtual intptr_t Hashcode() {
     ASSERT_ALLOCATION_DISABLED;
     intptr_t hash;
@@ -2590,6 +2690,8 @@ class HConstant: public HTemplateInstruction<0> {
   }
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   // If this is a numerical constant, handle_ either points to to the
   // HeapObject the constant originated from or is null.  If the
   // constant is non-numeric, handle_ always points to a valid
@@ -2636,6 +2738,8 @@ class HBinaryOperation: public HTemplateInstruction<3> {
   virtual bool IsCommutative() const { return false; }
 
   virtual void PrintDataTo(StringStream* stream);
+
+  DECLARE_ABSTRACT_INSTRUCTION(BinaryOperation)
 };
 
 
@@ -2710,6 +2814,9 @@ class HArgumentsElements: public HTemplateInstruction<0> {
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
 
+ private:
+  virtual bool IsDeletable() const { return true; }
+
   bool from_inlined_;
 };
 
@@ -2729,6 +2836,9 @@ class HArgumentsLength: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -2854,6 +2964,8 @@ class HBitwiseBinaryOperation: public HBinaryOperation {
   DECLARE_ABSTRACT_INSTRUCTION(BitwiseBinaryOperation)
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   Representation observed_input_representation_[3];
 };
 
@@ -2877,6 +2989,9 @@ class HMathFloorOfDiv: public HBinaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -2909,6 +3024,9 @@ class HArithmeticBinaryOperation: public HBinaryOperation {
     }
     return HValue::InferredRepresentation();
   }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -3194,6 +3312,9 @@ class HGetCachedArrayIndex: public HUnaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -3298,7 +3419,7 @@ class HPower: public HTemplateInstruction<2> {
   }
 
   HValue* left() { return OperandAt(0); }
-  HValue* right() { return OperandAt(1); }
+  HValue* right() const { return OperandAt(1); }
 
   virtual Representation RequiredInputRepresentation(int index) {
     return index == 0
@@ -3310,6 +3431,11 @@ class HPower: public HTemplateInstruction<2> {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+ private:
+  virtual bool IsDeletable() const {
+    return !right()->representation().IsTagged();
+  }
 };
 
 
@@ -3327,6 +3453,9 @@ class HRandom: public HTemplateInstruction<1> {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(Random)
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -3717,7 +3846,7 @@ class HLoadGlobalCell: public HTemplateInstruction<0> {
   }
 
   Handle<JSGlobalPropertyCell>  cell() const { return cell_; }
-  bool RequiresHoleCheck();
+  bool RequiresHoleCheck() const;
 
   virtual void PrintDataTo(StringStream* stream);
 
@@ -3739,6 +3868,8 @@ class HLoadGlobalCell: public HTemplateInstruction<0> {
   }
 
  private:
+  virtual bool IsDeletable() const { return !RequiresHoleCheck(); }
+
   Handle<JSGlobalPropertyCell> cell_;
   PropertyDetails details_;
 };
@@ -3899,7 +4030,7 @@ class HLoadContextSlot: public HUnaryOperation {
     return mode_ == kCheckDeoptimize;
   }
 
-  bool RequiresHoleCheck() {
+  bool RequiresHoleCheck() const {
     return mode_ != kNoCheck;
   }
 
@@ -3918,6 +4049,8 @@ class HLoadContextSlot: public HUnaryOperation {
   }
 
  private:
+  virtual bool IsDeletable() const { return !RequiresHoleCheck(); }
+
   int slot_index_;
   Mode mode_;
 };
@@ -4010,6 +4143,8 @@ class HLoadNamedField: public HUnaryOperation {
   }
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   bool is_in_object_;
   int offset_;
 };
@@ -4156,7 +4291,7 @@ class HLoadKeyedFastElement
 
   virtual void PrintDataTo(StringStream* stream);
 
-  bool RequiresHoleCheck();
+  bool RequiresHoleCheck() const;
 
   DECLARE_CONCRETE_INSTRUCTION(LoadKeyedFastElement)
 
@@ -4170,6 +4305,8 @@ class HLoadKeyedFastElement
   }
 
  private:
+  virtual bool IsDeletable() const { return !RequiresHoleCheck(); }
+
   class ElementsKindField:  public BitField<ElementsKind, 0, 4> {};
   class IndexOffsetField:   public BitField<uint32_t, 4, 27> {};
   class IsDehoistedField:   public BitField<bool, 31, 1> {};
@@ -4216,7 +4353,7 @@ class HLoadKeyedFastDoubleElement
     return Representation::None();
   }
 
-  bool RequiresHoleCheck() {
+  bool RequiresHoleCheck() const {
     return hole_check_mode_ == PERFORM_HOLE_CHECK;
   }
 
@@ -4233,6 +4370,8 @@ class HLoadKeyedFastDoubleElement
   }
 
  private:
+  virtual bool IsDeletable() const { return !RequiresHoleCheck(); }
+
   uint32_t index_offset_;
   bool is_dehoisted_;
   HoleCheckMode hole_check_mode_;
@@ -4297,6 +4436,8 @@ class HLoadKeyedSpecializedArrayElement
   }
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   ElementsKind elements_kind_;
   uint32_t index_offset_;
   bool is_dehoisted_;
@@ -4486,6 +4627,7 @@ class HStoreKeyedFastDoubleElement
     SetOperandAt(0, elements);
     SetOperandAt(1, key);
     SetOperandAt(2, val);
+    SetFlag(kDeoptimizeOnUndefined);
     SetGVNFlag(kChangesDoubleArrayElements);
   }
 
@@ -4619,10 +4761,6 @@ class HTransitionElementsKind: public HTemplateInstruction<1> {
         transitioned_map_(transitioned_map) {
     SetOperandAt(0, object);
     SetFlag(kUseGVN);
-    // Don't set GVN DependOn flags here. That would defeat GVN's detection of
-    // congruent HTransitionElementsKind instructions. Instruction hoisting
-    // handles HTransitionElementsKind instruction specially, explicitly adding
-    // DependsOn flags during its dependency calculations.
     SetGVNFlag(kChangesElementsKind);
     if (original_map->has_fast_double_elements()) {
       SetGVNFlag(kChangesElementsPointer);
@@ -4681,6 +4819,10 @@ class HStringAdd: public HBinaryOperation {
 
  protected:
   virtual bool DataEquals(HValue* other) { return true; }
+
+  // TODO(svenpanne) Might be safe, but leave it out until we know for sure.
+  // private:
+  //  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -4715,6 +4857,10 @@ class HStringCharCodeAt: public HTemplateInstruction<3> {
   virtual Range* InferRange(Zone* zone) {
     return new(zone) Range(0, String::kMaxUtf16CodeUnit);
   }
+
+  // TODO(svenpanne) Might be safe, but leave it out until we know for sure.
+  // private:
+  //  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -4741,6 +4887,10 @@ class HStringCharFromCode: public HTemplateInstruction<2> {
   virtual bool DataEquals(HValue* other) { return true; }
 
   DECLARE_CONCRETE_INSTRUCTION(StringCharFromCode)
+
+  // TODO(svenpanne) Might be safe, but leave it out until we know for sure.
+  // private:
+  //  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -4769,6 +4919,9 @@ class HStringLength: public HUnaryOperation {
   virtual Range* InferRange(Zone* zone) {
     return new(zone) Range(0, String::kMaxLength);
   }
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -4795,6 +4948,9 @@ class HAllocateObject: public HTemplateInstruction<1> {
   DECLARE_CONCRETE_INSTRUCTION(AllocateObject)
 
  private:
+  // TODO(svenpanne) Might be safe, but leave it out until we know for sure.
+  //  virtual bool IsDeletable() const { return true; }
+
   Handle<JSFunction> constructor_;
 };
 
@@ -4811,6 +4967,8 @@ class HMaterializedLiteral: public HTemplateInstruction<V> {
   int depth() const { return depth_; }
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   int literal_index_;
   int depth_;
 };
@@ -4986,6 +5144,8 @@ class HFunctionLiteral: public HTemplateInstruction<1> {
   bool pretenure() const { return pretenure_; }
 
  private:
+  virtual bool IsDeletable() const { return true; }
+
   Handle<SharedFunctionInfo> shared_info_;
   bool pretenure_;
 };
@@ -5010,6 +5170,9 @@ class HTypeof: public HTemplateInstruction<2> {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(Typeof)
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -5028,6 +5191,9 @@ class HToFastProperties: public HUnaryOperation {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(ToFastProperties)
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -5042,6 +5208,9 @@ class HValueOf: public HUnaryOperation {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(ValueOf)
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 
@@ -5238,6 +5407,9 @@ class HLoadFieldByIndex : public HTemplateInstruction<2> {
   }
 
   DECLARE_CONCRETE_INSTRUCTION(LoadFieldByIndex);
+
+ private:
+  virtual bool IsDeletable() const { return true; }
 };
 
 

@@ -125,6 +125,8 @@ enum BuiltinExtraArguments {
                                     Code::kNoExtraICState)              \
   V(LoadIC_Megamorphic,             LOAD_IC, MEGAMORPHIC,               \
                                     Code::kNoExtraICState)              \
+  V(LoadIC_Getter_ForDeopt,         LOAD_IC, MONOMORPHIC,               \
+                                    Code::kNoExtraICState)              \
                                                                         \
   V(KeyedLoadIC_Initialize,         KEYED_LOAD_IC, UNINITIALIZED,       \
                                     Code::kNoExtraICState)              \
@@ -158,6 +160,8 @@ enum BuiltinExtraArguments {
   V(StoreIC_Megamorphic_Strict,     STORE_IC, MEGAMORPHIC,              \
                                     kStrictMode)                        \
   V(StoreIC_GlobalProxy_Strict,     STORE_IC, MEGAMORPHIC,              \
+                                    kStrictMode)                        \
+  V(StoreIC_Setter_ForDeopt,        STORE_IC, MONOMORPHIC,              \
                                     kStrictMode)                        \
                                                                         \
   V(KeyedStoreIC_Initialize,        KEYED_STORE_IC, UNINITIALIZED,      \

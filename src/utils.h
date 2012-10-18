@@ -248,6 +248,7 @@ class BitField {
   // bitfield without compiler warnings we have to compute 2^32 without
   // using a shift count of 32.
   static const uint32_t kMask = ((1U << shift) << size) - (1U << shift);
+  static const uint32_t kShift = shift;
 
   // Value for the field with all bits set.
   static const T kMax = static_cast<T>((1U << size) - 1);
@@ -861,7 +862,11 @@ class EmbeddedContainer {
  public:
   EmbeddedContainer() : elems_() { }
 
-  int length() { return NumElements; }
+  int length() const { return NumElements; }
+  const ElementType& operator[](int i) const {
+    ASSERT(i < length());
+    return elems_[i];
+  }
   ElementType& operator[](int i) {
     ASSERT(i < length());
     return elems_[i];
@@ -875,7 +880,12 @@ class EmbeddedContainer {
 template<typename ElementType>
 class EmbeddedContainer<ElementType, 0> {
  public:
-  int length() { return 0; }
+  int length() const { return 0; }
+  const ElementType& operator[](int i) const {
+    UNREACHABLE();
+    static ElementType t = 0;
+    return t;
+  }
   ElementType& operator[](int i) {
     UNREACHABLE();
     static ElementType t = 0;
@@ -973,7 +983,7 @@ class EnumSet {
   T Mask(E element) const {
     // The strange typing in ASSERT is necessary to avoid stupid warnings, see:
     // http://gcc.gnu.org/bugzilla/show_bug.cgi?id=43680
-    ASSERT(element < static_cast<int>(sizeof(T) * CHAR_BIT));
+    ASSERT(static_cast<int>(element) < static_cast<int>(sizeof(T) * CHAR_BIT));
     return 1 << element;
   }
 

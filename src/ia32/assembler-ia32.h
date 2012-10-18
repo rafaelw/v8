@@ -983,6 +983,7 @@ class Assembler : public AssemblerBase {
   // SSE2 instructions
   void cvttss2si(Register dst, const Operand& src);
   void cvttsd2si(Register dst, const Operand& src);
+  void cvtsd2si(Register dst, XMMRegister src);
 
   void cvtsi2sd(XMMRegister dst, Register src) { cvtsi2sd(dst, Operand(src)); }
   void cvtsi2sd(XMMRegister dst, const Operand& src);
@@ -1015,6 +1016,7 @@ class Assembler : public AssemblerBase {
   void movmskpd(Register dst, XMMRegister src);
 
   void cmpltsd(XMMRegister dst, XMMRegister src);
+  void pcmpeqd(XMMRegister dst, XMMRegister src);
 
   void movaps(XMMRegister dst, XMMRegister src);
 

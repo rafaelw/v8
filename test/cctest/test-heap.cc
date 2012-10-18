@@ -4,10 +4,12 @@
 
 #include "v8.h"
 
+#include "compilation-cache.h"
 #include "execution.h"
 #include "factory.h"
 #include "macro-assembler.h"
 #include "global-handles.h"
+#include "stub-cache.h"
 #include "cctest.h"
 
 using namespace v8::internal;
@@ -157,7 +159,8 @@ TEST(HeapObjects) {
 
   String* object_symbol = String::cast(HEAP->Object_symbol());
   CHECK(
-      Isolate::Current()->context()->global()->HasLocalProperty(object_symbol));
+      Isolate::Current()->context()->global_object()->HasLocalProperty(
+          object_symbol));
 
   // Check ToString for oddballs
   CheckOddball(HEAP->true_value(), "true");
@@ -213,7 +216,7 @@ TEST(GarbageCollection) {
     Handle<Map> initial_map =
         FACTORY->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
     function->set_initial_map(*initial_map);
-    Isolate::Current()->context()->global()->SetProperty(
+    Isolate::Current()->context()->global_object()->SetProperty(
         *name, *function, NONE, kNonStrictMode)->ToObjectChecked();
     // Allocate an object.  Unrooted after leaving the scope.
     Handle<JSObject> obj = FACTORY->NewJSObject(function);
@@ -229,9 +232,10 @@ TEST(GarbageCollection) {
   HEAP->CollectGarbage(NEW_SPACE);
 
   // Function should be alive.
-  CHECK(Isolate::Current()->context()->global()->HasLocalProperty(*name));
+  CHECK(Isolate::Current()->context()->global_object()->
+        HasLocalProperty(*name));
   // Check function is retained.
-  Object* func_value = Isolate::Current()->context()->global()->
+  Object* func_value = Isolate::Current()->context()->global_object()->
       GetProperty(*name)->ToObjectChecked();
   CHECK(func_value->IsJSFunction());
   Handle<JSFunction> function(JSFunction::cast(func_value));
@@ -240,7 +244,7 @@ TEST(GarbageCollection) {
     HandleScope inner_scope;
     // Allocate another object, make it reachable from global.
     Handle<JSObject> obj = FACTORY->NewJSObject(function);
-    Isolate::Current()->context()->global()->SetProperty(
+    Isolate::Current()->context()->global_object()->SetProperty(
         *obj_name, *obj, NONE, kNonStrictMode)->ToObjectChecked();
     obj->SetProperty(
         *prop_name, Smi::FromInt(23), NONE, kNonStrictMode)->ToObjectChecked();
@@ -249,10 +253,11 @@ TEST(GarbageCollection) {
   // After gc, it should survive.
   HEAP->CollectGarbage(NEW_SPACE);
 
-  CHECK(Isolate::Current()->context()->global()->HasLocalProperty(*obj_name));
-  CHECK(Isolate::Current()->context()->global()->
+  CHECK(Isolate::Current()->context()->global_object()->
+        HasLocalProperty(*obj_name));
+  CHECK(Isolate::Current()->context()->global_object()->
         GetProperty(*obj_name)->ToObjectChecked()->IsJSObject());
-  Object* obj = Isolate::Current()->context()->global()->
+  Object* obj = Isolate::Current()->context()->global_object()->
       GetProperty(*obj_name)->ToObjectChecked();
   JSObject* js_obj = JSObject::cast(obj);
   CHECK_EQ(Smi::FromInt(23), js_obj->GetProperty(*prop_name));
@@ -563,7 +568,7 @@ TEST(ObjectProperties) {
 
   v8::HandleScope sc;
   String* object_symbol = String::cast(HEAP->Object_symbol());
-  Object* raw_object = Isolate::Current()->context()->global()->
+  Object* raw_object = Isolate::Current()->context()->global_object()->
       GetProperty(object_symbol)->ToObjectChecked();
   JSFunction* object_function = JSFunction::cast(raw_object);
   Handle<JSFunction> constructor(object_function);
@@ -660,7 +665,7 @@ TEST(JSArray) {
 
   v8::HandleScope sc;
   Handle<String> name = FACTORY->LookupAsciiSymbol("Array");
-  Object* raw_object = Isolate::Current()->context()->global()->
+  Object* raw_object = Isolate::Current()->context()->global_object()->
       GetProperty(*name)->ToObjectChecked();
   Handle<JSFunction> function = Handle<JSFunction>(
       JSFunction::cast(raw_object));
@@ -707,7 +712,7 @@ TEST(JSObjectCopy) {
 
   v8::HandleScope sc;
   String* object_symbol = String::cast(HEAP->Object_symbol());
-  Object* raw_object = Isolate::Current()->context()->global()->
+  Object* raw_object = Isolate::Current()->context()->global_object()->
       GetProperty(object_symbol)->ToObjectChecked();
   JSFunction* object_function = JSFunction::cast(raw_object);
   Handle<JSFunction> constructor(object_function);
@@ -876,7 +881,7 @@ TEST(Regression39128) {
 
   // Step 1: prepare a map for the object.  We add 1 inobject property to it.
   Handle<JSFunction> object_ctor(
-      Isolate::Current()->global_context()->object_function());
+      Isolate::Current()->native_context()->object_function());
   CHECK(object_ctor->has_initial_map());
   Handle<Map> object_map(object_ctor->initial_map());
   // Create a map with single inobject property.
@@ -956,7 +961,7 @@ TEST(TestCodeFlushing) {
   }
 
   // Check function is compiled.
-  Object* func_value = Isolate::Current()->context()->global()->
+  Object* func_value = Isolate::Current()->context()->global_object()->
       GetProperty(*foo_name)->ToObjectChecked();
   CHECK(func_value->IsJSFunction());
   Handle<JSFunction> function(JSFunction::cast(func_value));
@@ -985,10 +990,10 @@ TEST(TestCodeFlushing) {
 }
 
 
-// Count the number of global contexts in the weak list of global contexts.
-int CountGlobalContexts() {
+// Count the number of native contexts in the weak list of native contexts.
+int CountNativeContexts() {
   int count = 0;
-  Object* object = HEAP->global_contexts_list();
+  Object* object = HEAP->native_contexts_list();
   while (!object->IsUndefined()) {
     count++;
     object = Context::cast(object)->get(Context::NEXT_CONTEXT_LINK);
@@ -998,7 +1003,7 @@ int CountGlobalContexts() {
 
 
 // Count the number of user functions in the weak list of optimized
-// functions attached to a global context.
+// functions attached to a native context.
 static int CountOptimizedUserFunctions(v8::Handle<v8::Context> context) {
   int count = 0;
   Handle<Context> icontext = v8::Utils::OpenHandle(*context);
@@ -1019,7 +1024,7 @@ TEST(TestInternalWeakLists) {
   v8::HandleScope scope;
   v8::Persistent<v8::Context> ctx[kNumTestContexts];
 
-  CHECK_EQ(0, CountGlobalContexts());
+  CHECK_EQ(0, CountNativeContexts());
 
   // Create a number of global contests which gets linked together.
   for (int i = 0; i < kNumTestContexts; i++) {
@@ -1027,7 +1032,7 @@ TEST(TestInternalWeakLists) {
 
     bool opt = (FLAG_always_opt && i::V8::UseCrankshaft());
 
-    CHECK_EQ(i + 1, CountGlobalContexts());
+    CHECK_EQ(i + 1, CountNativeContexts());
 
     ctx[i]->Enter();
 
@@ -1062,6 +1067,7 @@ TEST(TestInternalWeakLists) {
     }
 
     // Mark compact handles the weak references.
+    ISOLATE->compilation_cache()->Clear();
     HEAP->CollectAllGarbage(Heap::kNoGCFlags);
     CHECK_EQ(opt ? 4 : 0, CountOptimizedUserFunctions(ctx[i]));
 
@@ -1087,7 +1093,7 @@ TEST(TestInternalWeakLists) {
   // Force compilation cache cleanup.
   HEAP->CollectAllGarbage(Heap::kNoGCFlags);
 
-  // Dispose the global contexts one by one.
+  // Dispose the native contexts one by one.
   for (int i = 0; i < kNumTestContexts; i++) {
     ctx[i].Dispose();
     ctx[i].Clear();
@@ -1095,23 +1101,23 @@ TEST(TestInternalWeakLists) {
     // Scavenge treats these references as strong.
     for (int j = 0; j < 10; j++) {
       HEAP->PerformScavenge();
-      CHECK_EQ(kNumTestContexts - i, CountGlobalContexts());
+      CHECK_EQ(kNumTestContexts - i, CountNativeContexts());
     }
 
     // Mark compact handles the weak references.
     HEAP->CollectAllGarbage(Heap::kNoGCFlags);
-    CHECK_EQ(kNumTestContexts - i - 1, CountGlobalContexts());
+    CHECK_EQ(kNumTestContexts - i - 1, CountNativeContexts());
   }
 
-  CHECK_EQ(0, CountGlobalContexts());
+  CHECK_EQ(0, CountNativeContexts());
 }
 
 
-// Count the number of global contexts in the weak list of global contexts
+// Count the number of native contexts in the weak list of native contexts
 // causing a GC after the specified number of elements.
-static int CountGlobalContextsWithGC(int n) {
+static int CountNativeContextsWithGC(int n) {
   int count = 0;
-  Handle<Object> object(HEAP->global_contexts_list());
+  Handle<Object> object(HEAP->native_contexts_list());
   while (!object->IsUndefined()) {
     count++;
     if (count == n) HEAP->CollectAllGarbage(Heap::kNoGCFlags);
@@ -1123,7 +1129,7 @@ static int CountGlobalContextsWithGC(int n) {
 
 
 // Count the number of user functions in the weak list of optimized
-// functions attached to a global context causing a GC after the
+// functions attached to a native context causing a GC after the
 // specified number of elements.
 static int CountOptimizedUserFunctionsWithGC(v8::Handle<v8::Context> context,
                                              int n) {
@@ -1149,14 +1155,14 @@ TEST(TestInternalWeakListsTraverseWithGC) {
   v8::HandleScope scope;
   v8::Persistent<v8::Context> ctx[kNumTestContexts];
 
-  CHECK_EQ(0, CountGlobalContexts());
+  CHECK_EQ(0, CountNativeContexts());
 
   // Create an number of contexts and check the length of the weak list both
   // with and without GCs while iterating the list.
   for (int i = 0; i < kNumTestContexts; i++) {
     ctx[i] = v8::Context::New();
-    CHECK_EQ(i + 1, CountGlobalContexts());
-    CHECK_EQ(i + 1, CountGlobalContextsWithGC(i / 2 + 1));
+    CHECK_EQ(i + 1, CountNativeContexts());
+    CHECK_EQ(i + 1, CountNativeContextsWithGC(i / 2 + 1));
   }
 
   bool opt = (FLAG_always_opt && i::V8::UseCrankshaft());
@@ -1241,7 +1247,9 @@ TEST(TestSizeOfObjectsVsHeapIteratorPrecision) {
   for (HeapObject* obj = iterator.next();
        obj != NULL;
        obj = iterator.next()) {
-    size_of_objects_2 += obj->Size();
+    if (!obj->IsFreeSpace()) {
+      size_of_objects_2 += obj->Size();
+    }
   }
   // Delta must be within 5% of the larger result.
   // TODO(gc): Tighten this up by distinguishing between byte
@@ -1270,7 +1278,6 @@ static void FillUpNewSpace(NewSpace* new_space) {
   // that the scavenger does not undo the filling.
   v8::HandleScope scope;
   AlwaysAllocateScope always_allocate;
-  LinearAllocationScope allocate_linearly;
   intptr_t available = new_space->EffectiveCapacity() - new_space->Size();
   intptr_t number_of_fillers = (available / FixedArray::SizeFor(32)) - 1;
   for (intptr_t i = 0; i < number_of_fillers; i++) {
@@ -1366,7 +1373,7 @@ static int NumberOfGlobalObjects() {
 
 // Test that we don't embed maps from foreign contexts into
 // optimized code.
-TEST(LeakGlobalContextViaMap) {
+TEST(LeakNativeContextViaMap) {
   i::FLAG_allow_natives_syntax = true;
   v8::HandleScope outer_scope;
   v8::Persistent<v8::Context> ctx1 = v8::Context::New();
@@ -1392,6 +1399,7 @@ TEST(LeakGlobalContextViaMap) {
     ctx2->Exit();
     ctx1->Exit();
     ctx1.Dispose();
+    v8::V8::ContextDisposedNotification();
   }
   HEAP->CollectAllAvailableGarbage();
   CHECK_EQ(2, NumberOfGlobalObjects());
@@ -1403,7 +1411,7 @@ TEST(LeakGlobalContextViaMap) {
 
 // Test that we don't embed functions from foreign contexts into
 // optimized code.
-TEST(LeakGlobalContextViaFunction) {
+TEST(LeakNativeContextViaFunction) {
   i::FLAG_allow_natives_syntax = true;
   v8::HandleScope outer_scope;
   v8::Persistent<v8::Context> ctx1 = v8::Context::New();
@@ -1429,6 +1437,7 @@ TEST(LeakGlobalContextViaFunction) {
     ctx2->Exit();
     ctx1->Exit();
     ctx1.Dispose();
+    v8::V8::ContextDisposedNotification();
   }
   HEAP->CollectAllAvailableGarbage();
   CHECK_EQ(2, NumberOfGlobalObjects());
@@ -1438,7 +1447,7 @@ TEST(LeakGlobalContextViaFunction) {
 }
 
 
-TEST(LeakGlobalContextViaMapKeyed) {
+TEST(LeakNativeContextViaMapKeyed) {
   i::FLAG_allow_natives_syntax = true;
   v8::HandleScope outer_scope;
   v8::Persistent<v8::Context> ctx1 = v8::Context::New();
@@ -1464,6 +1473,7 @@ TEST(LeakGlobalContextViaMapKeyed) {
     ctx2->Exit();
     ctx1->Exit();
     ctx1.Dispose();
+    v8::V8::ContextDisposedNotification();
   }
   HEAP->CollectAllAvailableGarbage();
   CHECK_EQ(2, NumberOfGlobalObjects());
@@ -1473,7 +1483,7 @@ TEST(LeakGlobalContextViaMapKeyed) {
 }
 
 
-TEST(LeakGlobalContextViaMapProto) {
+TEST(LeakNativeContextViaMapProto) {
   i::FLAG_allow_natives_syntax = true;
   v8::HandleScope outer_scope;
   v8::Persistent<v8::Context> ctx1 = v8::Context::New();
@@ -1503,6 +1513,7 @@ TEST(LeakGlobalContextViaMapProto) {
     ctx2->Exit();
     ctx1->Exit();
     ctx1.Dispose();
+    v8::V8::ContextDisposedNotification();
   }
   HEAP->CollectAllAvailableGarbage();
   CHECK_EQ(2, NumberOfGlobalObjects());
@@ -1514,9 +1525,10 @@ TEST(LeakGlobalContextViaMapProto) {
 
 TEST(InstanceOfStubWriteBarrier) {
   i::FLAG_allow_natives_syntax = true;
-#ifdef DEBUG
+#ifdef VERIFY_HEAP
   i::FLAG_verify_heap = true;
 #endif
+
   InitializeVM();
   if (!i::V8::UseCrankshaft()) return;
   v8::HandleScope outer_scope;
@@ -1625,9 +1637,10 @@ TEST(PrototypeTransitionClearing) {
 
 TEST(ResetSharedFunctionInfoCountersDuringIncrementalMarking) {
   i::FLAG_allow_natives_syntax = true;
-#ifdef DEBUG
+#ifdef VERIFY_HEAP
   i::FLAG_verify_heap = true;
 #endif
+
   InitializeVM();
   if (!i::V8::UseCrankshaft()) return;
   v8::HandleScope outer_scope;
@@ -1680,9 +1693,10 @@ TEST(ResetSharedFunctionInfoCountersDuringIncrementalMarking) {
 
 TEST(ResetSharedFunctionInfoCountersDuringMarkSweep) {
   i::FLAG_allow_natives_syntax = true;
-#ifdef DEBUG
+#ifdef VERIFY_HEAP
   i::FLAG_verify_heap = true;
 #endif
+
   InitializeVM();
   if (!i::V8::UseCrankshaft()) return;
   v8::HandleScope outer_scope;
@@ -1925,8 +1939,13 @@ TEST(ReleaseOverReservedPages) {
   HEAP->CollectAllGarbage(Heap::kNoGCFlags, "triggered by test 2");
   CHECK_GE(number_of_test_pages + 1, old_pointer_space->CountTotalPages() * 2);
 
-  // Triggering a last-resort GC should cause all pages to be released
-  // to the OS so that other processes can seize the memory.
+  // Triggering a last-resort GC should cause all pages to be released to the
+  // OS so that other processes can seize the memory.  If we get a failure here
+  // where there are 2 pages left instead of 1, then we should increase the
+  // size of the first page a little in SizeOfFirstPage in spaces.cc.  The
+  // first page should be small in order to reduce memory used when the VM
+  // boots, but if the 20 small arrays don't fit on the first page then that's
+  // an indication that it is too small.
   HEAP->CollectAllAvailableGarbage("triggered really hard");
   CHECK_EQ(1, old_pointer_space->CountTotalPages());
 }
@@ -2040,7 +2059,7 @@ TEST(IncrementalMarkingClearsTypeFeedbackCells) {
   }
 
   // Prepare function f that contains type feedback for closures
-  // originating from two different global contexts.
+  // originating from two different native contexts.
   v8::Context::GetCurrent()->Global()->Set(v8_str("fun1"), fun1);
   v8::Context::GetCurrent()->Global()->Set(v8_str("fun2"), fun2);
   CompileRun("function f(a, b) { a(); b(); } f(fun1, fun2);");
@@ -2086,7 +2105,7 @@ TEST(IncrementalMarkingPreservesMonomorhpicIC) {
   v8::HandleScope scope;
 
   // Prepare function f that contains a monomorphic IC for object
-  // originating from the same global context.
+  // originating from the same native context.
   CompileRun("function fun() { this.x = 1; }; var obj = new fun();"
              "function f(o) { return o.x; } f(obj); f(obj);");
   Handle<JSFunction> f =
@@ -2097,8 +2116,6 @@ TEST(IncrementalMarkingPreservesMonomorhpicIC) {
   Code* ic_before = FindFirstIC(f->shared()->code(), Code::LOAD_IC);
   CHECK(ic_before->ic_state() == MONOMORPHIC);
 
-  // Fire context dispose notification.
-  v8::V8::ContextDisposedNotification();
   SimulateIncrementalMarking();
   HEAP->CollectAllGarbage(Heap::kNoGCFlags);
 
@@ -2120,7 +2137,7 @@ TEST(IncrementalMarkingClearsMonomorhpicIC) {
   }
 
   // Prepare function f that contains a monomorphic IC for object
-  // originating from a different global context.
+  // originating from a different native context.
   v8::Context::GetCurrent()->Global()->Set(v8_str("obj1"), obj1);
   CompileRun("function f(o) { return o.x; } f(obj1); f(obj1);");
   Handle<JSFunction> f =
@@ -2160,7 +2177,7 @@ TEST(IncrementalMarkingClearsPolymorhpicIC) {
   }
 
   // Prepare function f that contains a polymorphic IC for objects
-  // originating from two different global contexts.
+  // originating from two different native contexts.
   v8::Context::GetCurrent()->Global()->Set(v8_str("obj1"), obj1);
   v8::Context::GetCurrent()->Global()->Set(v8_str("obj2"), obj2);
   CompileRun("function f(o) { return o.x; } f(obj1); f(obj1); f(obj2);");
@@ -2179,4 +2196,118 @@ TEST(IncrementalMarkingClearsPolymorhpicIC) {
 
   Code* ic_after = FindFirstIC(f->shared()->code(), Code::LOAD_IC);
   CHECK(ic_after->ic_state() == UNINITIALIZED);
+}
+
+
+class SourceResource: public v8::String::ExternalAsciiStringResource {
+ public:
+  explicit SourceResource(const char* data)
+    : data_(data), length_(strlen(data)) { }
+
+  virtual void Dispose() {
+    i::DeleteArray(data_);
+    data_ = NULL;
+  }
+
+  const char* data() const { return data_; }
+
+  size_t length() const { return length_; }
+
+  bool IsDisposed() { return data_ == NULL; }
+
+ private:
+  const char* data_;
+  size_t length_;
+};
+
+
+TEST(ReleaseStackTraceData) {
+  // Test that the data retained by the Error.stack accessor is released
+  // after the first time the accessor is fired.  We use external string
+  // to check whether the data is being released since the external string
+  // resource's callback is fired when the external string is GC'ed.
+  InitializeVM();
+  v8::HandleScope scope;
+  static const char* source = "var error = 1;       "
+                              "try {                "
+                              "  throw new Error(); "
+                              "} catch (e) {        "
+                              "  error = e;         "
+                              "}                    ";
+  SourceResource* resource = new SourceResource(i::StrDup(source));
+  {
+    v8::HandleScope scope;
+    v8::Handle<v8::String> source_string = v8::String::NewExternal(resource);
+    v8::Script::Compile(source_string)->Run();
+    CHECK(!resource->IsDisposed());
+  }
+  HEAP->CollectAllAvailableGarbage();
+  // External source is being retained by the stack trace.
+  CHECK(!resource->IsDisposed());
+
+  CompileRun("error.stack; error.stack;");
+  HEAP->CollectAllAvailableGarbage();
+  // External source has been released.
+  CHECK(resource->IsDisposed());
+
+  delete resource;
+}
+
+
+TEST(Regression144230) {
+  InitializeVM();
+  v8::HandleScope scope;
+
+  // First make sure that the uninitialized CallIC stub is on a single page
+  // that will later be selected as an evacuation candidate.
+  {
+    v8::HandleScope inner_scope;
+    AlwaysAllocateScope always_allocate;
+    SimulateFullSpace(HEAP->code_space());
+    ISOLATE->stub_cache()->ComputeCallInitialize(9, RelocInfo::CODE_TARGET);
+  }
+
+  // Second compile a CallIC and execute it once so that it gets patched to
+  // the pre-monomorphic stub. These code objects are on yet another page.
+  {
+    v8::HandleScope inner_scope;
+    AlwaysAllocateScope always_allocate;
+    SimulateFullSpace(HEAP->code_space());
+    CompileRun("var o = { f:function(a,b,c,d,e,f,g,h,i) {}};"
+               "function call() { o.f(1,2,3,4,5,6,7,8,9); };"
+               "call();");
+  }
+
+  // Third we fill up the last page of the code space so that it does not get
+  // chosen as an evacuation candidate.
+  {
+    v8::HandleScope inner_scope;
+    AlwaysAllocateScope always_allocate;
+    CompileRun("for (var i = 0; i < 2000; i++) {"
+               "  eval('function f' + i + '() { return ' + i +'; };' +"
+               "       'f' + i + '();');"
+               "}");
+  }
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+
+  // Fourth is the tricky part. Make sure the code containing the CallIC is
+  // visited first without clearing the IC. The shared function info is then
+  // visited later, causing the CallIC to be cleared.
+  Handle<String> name = FACTORY->LookupAsciiSymbol("call");
+  Handle<GlobalObject> global(ISOLATE->context()->global_object());
+  MaybeObject* maybe_call = global->GetProperty(*name);
+  JSFunction* call = JSFunction::cast(maybe_call->ToObjectChecked());
+  USE(global->SetProperty(*name, Smi::FromInt(0), NONE, kNonStrictMode));
+  ISOLATE->compilation_cache()->Clear();
+  call->shared()->set_ic_age(HEAP->global_ic_age() + 1);
+  Handle<Object> call_code(call->code());
+  Handle<Object> call_function(call);
+
+  // Now we are ready to mess up the heap.
+  HEAP->CollectAllGarbage(Heap::kReduceMemoryFootprintMask);
+
+  // Either heap verification caught the problem already or we go kaboom once
+  // the CallIC is executed the next time.
+  USE(global->SetProperty(*name, *call_function, NONE, kNonStrictMode));
+  CompileRun("call();");
 }

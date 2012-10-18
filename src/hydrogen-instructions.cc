@@ -707,7 +707,7 @@ void HCallGlobal::PrintDataTo(StringStream* stream) {
 
 
 void HCallKnownGlobal::PrintDataTo(StringStream* stream) {
-  stream->Add("o ", target()->shared()->DebugName());
+  stream->Add("%o ", target()->shared()->DebugName());
   stream->Add("#%d", argument_count());
 }
 
@@ -875,12 +875,14 @@ HValue* HBitwise::Canonicalize() {
   int32_t nop_constant = (op() == Token::BIT_AND) ? -1 : 0;
   if (left()->IsConstant() &&
       HConstant::cast(left())->HasInteger32Value() &&
-      HConstant::cast(left())->Integer32Value() == nop_constant) {
+      HConstant::cast(left())->Integer32Value() == nop_constant &&
+      !right()->CheckFlag(kUint32)) {
     return right();
   }
   if (right()->IsConstant() &&
       HConstant::cast(right())->HasInteger32Value() &&
-      HConstant::cast(right())->Integer32Value() == nop_constant) {
+      HConstant::cast(right())->Integer32Value() == nop_constant &&
+      !left()->CheckFlag(kUint32)) {
     return left();
   }
   return this;
@@ -892,7 +894,9 @@ HValue* HBitNot::Canonicalize() {
   if (value()->IsBitNot()) {
     HValue* result = HBitNot::cast(value())->value();
     ASSERT(result->representation().IsInteger32());
-    return result;
+    if (!result->CheckFlag(kUint32)) {
+      return result;
+    }
   }
   return this;
 }
@@ -1054,6 +1058,13 @@ void HCheckInstanceType::GetCheckMaskAndTag(uint8_t* mask, uint8_t* tag) {
 }
 
 
+void HLoadElements::PrintDataTo(StringStream* stream) {
+  value()->PrintNameTo(stream);
+  stream->Add(" ");
+  typecheck()->PrintNameTo(stream);
+}
+
+
 void HCheckMaps::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
   stream->Add(" [%p", *map_set()->first());
@@ -1120,6 +1131,7 @@ Range* HChange::InferRange(Zone* zone) {
   Range* input_range = value()->range();
   if (from().IsInteger32() &&
       to().IsTagged() &&
+      !value()->CheckFlag(HInstruction::kUint32) &&
       input_range != NULL && input_range->IsInSmiRange()) {
     set_type(HType::Smi());
   }
@@ -1849,7 +1861,7 @@ void HLoadKeyedFastElement::PrintDataTo(StringStream* stream) {
 }
 
 
-bool HLoadKeyedFastElement::RequiresHoleCheck() {
+bool HLoadKeyedFastElement::RequiresHoleCheck() const {
   if (IsFastPackedElementsKind(elements_kind())) {
     return false;
   }
@@ -2085,7 +2097,7 @@ void HLoadGlobalCell::PrintDataTo(StringStream* stream) {
 }
 
 
-bool HLoadGlobalCell::RequiresHoleCheck() {
+bool HLoadGlobalCell::RequiresHoleCheck() const {
   if (details_.IsDontDelete() && !details_.IsReadOnly()) return false;
   for (HUseIterator it(uses()); !it.Done(); it.Advance()) {
     HValue* use = it.value();

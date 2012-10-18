@@ -155,7 +155,7 @@ TEST(StressJS) {
       FACTORY->NewStringFromAscii(Vector<const char>("get", 3));
   ASSERT(instance_descriptors->IsEmpty());
 
-  Handle<DescriptorArray> new_descriptors = FACTORY->NewDescriptorArray(1);
+  Handle<DescriptorArray> new_descriptors = FACTORY->NewDescriptorArray(0, 1);
 
   v8::internal::DescriptorArray::WhitenessWitness witness(*new_descriptors);
   map->set_instance_descriptors(*new_descriptors);

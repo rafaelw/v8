@@ -535,6 +535,24 @@ Handle<String> Isolate::StackTraceString() {
 }
 
 
+void Isolate::PushStackTraceAndDie(unsigned int magic,
+                                   Object* object,
+                                   Map* map,
+                                   unsigned int magic2) {
+  const int kMaxStackTraceSize = 8192;
+  Handle<String> trace = StackTraceString();
+  char buffer[kMaxStackTraceSize];
+  int length = Min(kMaxStackTraceSize - 1, trace->length());
+  String::WriteToFlat(*trace, buffer, 0, length);
+  buffer[length] = '\0';
+  OS::PrintError("Stacktrace (%x-%x) %p %p: %s\n",
+                 magic, magic2,
+                 static_cast<void*>(object), static_cast<void*>(map),
+                 buffer);
+  OS::Abort();
+}
+
+
 void Isolate::CaptureAndSetCurrentStackTraceFor(Handle<JSObject> error_object) {
   if (capture_stack_trace_for_uncaught_exceptions_) {
     // Capture stack trace for a detailed exception message.
@@ -789,16 +807,17 @@ static MayAccessDecision MayAccessPreCheck(Isolate* isolate,
   if (isolate->bootstrapper()->IsActive()) return YES;
 
   if (receiver->IsJSGlobalProxy()) {
-    Object* receiver_context = JSGlobalProxy::cast(receiver)->context();
+    Object* receiver_context = JSGlobalProxy::cast(receiver)->native_context();
     if (!receiver_context->IsContext()) return NO;
 
-    // Get the global context of current top context.
-    // avoid using Isolate::global_context() because it uses Handle.
-    Context* global_context = isolate->context()->global()->global_context();
-    if (receiver_context == global_context) return YES;
+    // Get the native context of current top context.
+    // avoid using Isolate::native_context() because it uses Handle.
+    Context* native_context =
+        isolate->context()->global_object()->native_context();
+    if (receiver_context == native_context) return YES;
 
     if (Context::cast(receiver_context)->security_token() ==
-        global_context->security_token())
+        native_context->security_token())
       return YES;
   }
 
@@ -1213,7 +1232,7 @@ void Isolate::ReportPendingMessages() {
   PropagatePendingExceptionToExternalTryCatch();
 
   // If the pending exception is OutOfMemoryException set out_of_memory in
-  // the global context.  Note: We have to mark the global context here
+  // the native context.  Note: We have to mark the native context here
   // since the GenerateThrowOutOfMemory stub cannot make a RuntimeCall to
   // set it.
   HandleScope scope;
@@ -1323,20 +1342,26 @@ bool Isolate::is_out_of_memory() {
 }
 
 
+Handle<Context> Isolate::native_context() {
+  GlobalObject* global = thread_local_top()->context_->global_object();
+  return Handle<Context>(global->native_context());
+}
+
+
 Handle<Context> Isolate::global_context() {
-  GlobalObject* global = thread_local_top()->context_->global();
+  GlobalObject* global = thread_local_top()->context_->global_object();
   return Handle<Context>(global->global_context());
 }
 
 
-Handle<Context> Isolate::GetCallingGlobalContext() {
+Handle<Context> Isolate::GetCallingNativeContext() {
   JavaScriptFrameIterator it;
 #ifdef ENABLE_DEBUGGER_SUPPORT
   if (debug_->InDebugger()) {
     while (!it.done()) {
       JavaScriptFrame* frame = it.frame();
       Context* context = Context::cast(frame->context());
-      if (context->global_context() == *debug_->debug_context()) {
+      if (context->native_context() == *debug_->debug_context()) {
         it.Advance();
       } else {
         break;
@@ -1347,7 +1372,7 @@ Handle<Context> Isolate::GetCallingGlobalContext() {
   if (it.done()) return Handle<Context>::null();
   JavaScriptFrame* frame = it.frame();
   Context* context = Context::cast(frame->context());
-  return Handle<Context>(context->global_context());
+  return Handle<Context>(context->native_context());
 }
 
 
@@ -1906,7 +1931,8 @@ bool Isolate::Init(Deserializer* des) {
 
   // If we are deserializing, log non-function code objects and compiled
   // functions found in the snapshot.
-  if (create_heap_objects && (FLAG_log_code || FLAG_ll_prof)) {
+  if (create_heap_objects &&
+      (FLAG_log_code || FLAG_ll_prof || logger_->is_logging_code_events())) {
     HandleScope scope;
     LOG(this, LogCodeObjects());
     LOG(this, LogCompiledFunctions());

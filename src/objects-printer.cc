@@ -254,7 +254,7 @@ void ExternalDoubleArray::ExternalDoubleArrayPrint(FILE* out) {
 void JSObject::PrintProperties(FILE* out) {
   if (HasFastProperties()) {
     DescriptorArray* descs = map()->instance_descriptors();
-    for (int i = 0; i < descs->number_of_descriptors(); i++) {
+    for (int i = 0; i < map()->NumberOfOwnDescriptors(); i++) {
       PrintF(out, "   ");
       descs->GetKey(i)->StringPrint(out);
       PrintF(out, ": ");
@@ -562,7 +562,11 @@ void Map::MapPrint(FILE* out) {
   if (is_access_check_needed()) {
     PrintF(out, " - access_check_needed\n");
   }
-  PrintF(out, " - instance descriptors: ");
+  PrintF(out, " - back pointer: ");
+  GetBackPointer()->ShortPrint(out);
+  PrintF(out, "\n - instance descriptors %i #%i: ",
+         owns_descriptors(),
+         NumberOfOwnDescriptors());
   instance_descriptors()->ShortPrint(out);
   if (HasTransitionArray()) {
     PrintF(out, "\n - transitions: ");
@@ -824,8 +828,8 @@ void SharedFunctionInfo::SharedFunctionInfoPrint(FILE* out) {
 void JSGlobalProxy::JSGlobalProxyPrint(FILE* out) {
   PrintF(out, "global_proxy ");
   JSObjectPrint(out);
-  PrintF(out, "context : ");
-  context()->ShortPrint(out);
+  PrintF(out, "native context : ");
+  native_context()->ShortPrint(out);
   PrintF(out, "\n");
 }
 
@@ -833,8 +837,8 @@ void JSGlobalProxy::JSGlobalProxyPrint(FILE* out) {
 void JSGlobalObject::JSGlobalObjectPrint(FILE* out) {
   PrintF(out, "global ");
   JSObjectPrint(out);
-  PrintF(out, "global context : ");
-  global_context()->ShortPrint(out);
+  PrintF(out, "native context : ");
+  native_context()->ShortPrint(out);
   PrintF(out, "\n");
 }
 

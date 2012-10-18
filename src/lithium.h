@@ -133,13 +133,15 @@ class LUnallocated: public LOperand {
   // index in the upper bits.
   static const int kPolicyWidth = 3;
   static const int kLifetimeWidth = 1;
-  static const int kVirtualRegisterWidth = 18;
+  static const int kVirtualRegisterWidth = 15;
 
   static const int kPolicyShift = kKindFieldWidth;
   static const int kLifetimeShift = kPolicyShift + kPolicyWidth;
   static const int kVirtualRegisterShift = kLifetimeShift + kLifetimeWidth;
   static const int kFixedIndexShift =
       kVirtualRegisterShift + kVirtualRegisterWidth;
+  static const int kFixedIndexWidth = 32 - kFixedIndexShift;
+  STATIC_ASSERT(kFixedIndexWidth > 5);
 
   class PolicyField : public BitField<Policy, kPolicyShift, kPolicyWidth> { };
 
@@ -154,8 +156,8 @@ class LUnallocated: public LOperand {
   };
 
   static const int kMaxVirtualRegisters = 1 << kVirtualRegisterWidth;
-  static const int kMaxFixedIndex = 63;
-  static const int kMinFixedIndex = -64;
+  static const int kMaxFixedIndex = (1 << kFixedIndexWidth) - 1;
+  static const int kMinFixedIndex = -(1 << kFixedIndexWidth);
 
   bool HasAnyPolicy() const {
     return policy() == ANY;
@@ -460,6 +462,7 @@ class LEnvironment: public ZoneObject {
                int argument_count,
                int value_count,
                LEnvironment* outer,
+               HEnterInlined* entry,
                Zone* zone)
       : closure_(closure),
         frame_type_(frame_type),
@@ -471,9 +474,11 @@ class LEnvironment: public ZoneObject {
         pc_offset_(-1),
         values_(value_count, zone),
         is_tagged_(value_count, zone),
+        is_uint32_(value_count, zone),
         spilled_registers_(NULL),
         spilled_double_registers_(NULL),
         outer_(outer),
+        entry_(entry),
         zone_(zone) { }
 
   Handle<JSFunction> closure() const { return closure_; }
@@ -490,16 +495,28 @@ class LEnvironment: public ZoneObject {
   }
   const ZoneList<LOperand*>* values() const { return &values_; }
   LEnvironment* outer() const { return outer_; }
+  HEnterInlined* entry() { return entry_; }
 
-  void AddValue(LOperand* operand, Representation representation) {
+  void AddValue(LOperand* operand,
+                Representation representation,
+                bool is_uint32) {
     values_.Add(operand, zone());
     if (representation.IsTagged()) {
+      ASSERT(!is_uint32);
       is_tagged_.Add(values_.length() - 1);
+    }
+
+    if (is_uint32) {
+      is_uint32_.Add(values_.length() - 1);
     }
   }
 
   bool HasTaggedValueAt(int index) const {
     return is_tagged_.Contains(index);
+  }
+
+  bool HasUint32ValueAt(int index) const {
+    return is_uint32_.Contains(index);
   }
 
   void Register(int deoptimization_index,
@@ -535,6 +552,7 @@ class LEnvironment: public ZoneObject {
   int pc_offset_;
   ZoneList<LOperand*> values_;
   BitVector is_tagged_;
+  BitVector is_uint32_;
 
   // Allocation index indexed arrays of spill slot operands for registers
   // that are also in spill slots at an OSR entry.  NULL for environments
@@ -543,6 +561,7 @@ class LEnvironment: public ZoneObject {
   LOperand** spilled_double_registers_;
 
   LEnvironment* outer_;
+  HEnterInlined* entry_;
 
   Zone* zone_;
 };

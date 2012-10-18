@@ -283,11 +283,12 @@ void StubCompiler::GenerateLoadGlobalFunctionPrototype(MacroAssembler* masm,
                                                        int index,
                                                        Register prototype) {
   // Load the global or builtins object from the current context.
-  __ ldr(prototype, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  // Load the global context from the global or builtins object.
   __ ldr(prototype,
-         FieldMemOperand(prototype, GlobalObject::kGlobalContextOffset));
-  // Load the function from the global context.
+         MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  // Load the native context from the global or builtins object.
+  __ ldr(prototype,
+         FieldMemOperand(prototype, GlobalObject::kNativeContextOffset));
+  // Load the function from the native context.
   __ ldr(prototype, MemOperand(prototype, Context::SlotOffset(index)));
   // Load the initial map.  The global functions all have initial maps.
   __ ldr(prototype,
@@ -304,13 +305,14 @@ void StubCompiler::GenerateDirectLoadGlobalFunctionPrototype(
     Label* miss) {
   Isolate* isolate = masm->isolate();
   // Check we're still in the same context.
-  __ ldr(prototype, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ Move(ip, isolate->global());
+  __ ldr(prototype,
+         MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ Move(ip, isolate->global_object());
   __ cmp(prototype, ip);
   __ b(ne, miss);
   // Get the global function with the given index.
   Handle<JSFunction> function(
-      JSFunction::cast(isolate->global_context()->get(index)));
+      JSFunction::cast(isolate->native_context()->get(index)));
   // Load its initial map. The global functions all have initial maps.
   __ Move(prototype, Handle<Map>(function->initial_map()));
   // Load the prototype from the initial map.
@@ -1238,8 +1240,12 @@ void StubCompiler::GenerateDictionaryLoadCallback(Register receiver,
                                                   Handle<AccessorInfo> callback,
                                                   Handle<String> name,
                                                   Label* miss) {
+  ASSERT(!receiver.is(scratch1));
+  ASSERT(!receiver.is(scratch2));
+  ASSERT(!receiver.is(scratch3));
+
+  // Load the properties dictionary.
   Register dictionary = scratch1;
-  Register index = scratch2;
   __ ldr(dictionary, FieldMemOperand(receiver, JSObject::kPropertiesOffset));
 
   // Probe the dictionary.
@@ -1249,19 +1255,18 @@ void StubCompiler::GenerateDictionaryLoadCallback(Register receiver,
                                                      &probe_done,
                                                      dictionary,
                                                      name_reg,
-                                                     index,  // Set if we hit.
+                                                     scratch2,
                                                      scratch3);
   __ bind(&probe_done);
 
-  // If probing finds an entry in the dictionary, check that the value is the
-  // callback.
-  const int kElementsStartOffset =
-      StringDictionary::kHeaderSize +
+  // If probing finds an entry in the dictionary, scratch3 contains the
+  // pointer into the dictionary. Check that the value is the callback.
+  Register pointer = scratch3;
+  const int kElementsStartOffset = StringDictionary::kHeaderSize +
       StringDictionary::kElementsStartIndex * kPointerSize;
   const int kValueOffset = kElementsStartOffset + kPointerSize;
-  __ add(scratch1, dictionary, Operand(kValueOffset - kHeapObjectTag));
-  __ ldr(scratch3, MemOperand(scratch1, index, LSL, kPointerSizeLog2));
-  __ cmp(scratch3, Operand(callback));
+  __ ldr(scratch2, FieldMemOperand(pointer, kValueOffset));
+  __ cmp(scratch2, Operand(callback));
   __ b(ne, miss);
 }
 
@@ -1273,6 +1278,7 @@ void StubCompiler::GenerateLoadCallback(Handle<JSObject> object,
                                         Register scratch1,
                                         Register scratch2,
                                         Register scratch3,
+                                        Register scratch4,
                                         Handle<AccessorInfo> callback,
                                         Handle<String> name,
                                         Label* miss) {
@@ -1285,7 +1291,7 @@ void StubCompiler::GenerateLoadCallback(Handle<JSObject> object,
 
   if (!holder->HasFastProperties() && !holder->IsJSGlobalObject()) {
     GenerateDictionaryLoadCallback(
-        receiver, name_reg, scratch1, scratch2, scratch3, callback, name, miss);
+        reg, name_reg, scratch2, scratch3, scratch4, callback, name, miss);
   }
 
   // Build AccessorInfo::args_ list on the stack and push property name below
@@ -2667,9 +2673,10 @@ Handle<Code> StoreStubCompiler::CompileStoreField(Handle<JSObject> object,
 
 
 Handle<Code> StoreStubCompiler::CompileStoreCallback(
-    Handle<JSObject> object,
-    Handle<AccessorInfo> callback,
-    Handle<String> name) {
+    Handle<String> name,
+    Handle<JSObject> receiver,
+    Handle<JSObject> holder,
+    Handle<AccessorInfo> callback) {
   // ----------- S t a t e -------------
   //  -- r0    : value
   //  -- r1    : receiver
@@ -2677,19 +2684,12 @@ Handle<Code> StoreStubCompiler::CompileStoreCallback(
   //  -- lr    : return address
   // -----------------------------------
   Label miss;
+  // Check that the maps haven't changed.
+  __ JumpIfSmi(r1, &miss);
+  CheckPrototypes(receiver, r1, holder, r3, r4, r5, name, &miss);
 
-  // Check that the map of the object hasn't changed.
-  __ CheckMap(r1, r3, Handle<Map>(object->map()), &miss,
-              DO_SMI_CHECK, ALLOW_ELEMENT_TRANSITION_MAPS);
-
-  // Perform global security token check if needed.
-  if (object->IsJSGlobalProxy()) {
-    __ CheckAccessGlobalProxy(r1, r3, &miss);
-  }
-
-  // Stub never generated for non-global objects that require access
-  // checks.
-  ASSERT(object->IsJSGlobalProxy() || !object->IsAccessCheckNeeded());
+  // Stub never generated for non-global objects that require access checks.
+  ASSERT(holder->IsJSGlobalProxy() || !holder->IsAccessCheckNeeded());
 
   __ push(r1);  // receiver
   __ mov(ip, Operand(callback));  // callback info
@@ -2711,6 +2711,51 @@ Handle<Code> StoreStubCompiler::CompileStoreCallback(
 }
 
 
+#undef __
+#define __ ACCESS_MASM(masm)
+
+
+void StoreStubCompiler::GenerateStoreViaSetter(
+    MacroAssembler* masm,
+    Handle<JSFunction> setter) {
+  // ----------- S t a t e -------------
+  //  -- r0    : value
+  //  -- r1    : receiver
+  //  -- r2    : name
+  //  -- lr    : return address
+  // -----------------------------------
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+
+    // Save value register, so we can restore it later.
+    __ push(r0);
+
+    if (!setter.is_null()) {
+      // Call the JavaScript setter with receiver and value on the stack.
+      __ Push(r1, r0);
+      ParameterCount actual(1);
+      __ InvokeFunction(setter, actual, CALL_FUNCTION, NullCallWrapper(),
+                        CALL_AS_METHOD);
+    } else {
+      // If we generate a global code snippet for deoptimization only, remember
+      // the place to continue after deoptimization.
+      masm->isolate()->heap()->SetSetterStubDeoptPCOffset(masm->pc_offset());
+    }
+
+    // We have to return the passed value, not the return value of the setter.
+    __ pop(r0);
+
+    // Restore context register.
+    __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  }
+  __ Ret();
+}
+
+
+#undef __
+#define __ ACCESS_MASM(masm())
+
+
 Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
     Handle<String> name,
     Handle<JSObject> receiver,
@@ -2728,25 +2773,7 @@ Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
   __ JumpIfSmi(r1, &miss);
   CheckPrototypes(receiver, r1, holder, r3, r4, r5, name, &miss);
 
-  {
-    FrameScope scope(masm(), StackFrame::INTERNAL);
-
-    // Save value register, so we can restore it later.
-    __ push(r0);
-
-    // Call the JavaScript setter with the receiver and the value on the stack.
-    __ Push(r1, r0);
-    ParameterCount actual(1);
-    __ InvokeFunction(setter, actual, CALL_FUNCTION, NullCallWrapper(),
-                      CALL_AS_METHOD);
-
-    // We have to return the passed value, not the return value of the setter.
-    __ pop(r0);
-
-    // Restore context register.
-    __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
-  }
-  __ Ret();
+  GenerateStoreViaSetter(masm(), setter);
 
   __ bind(&miss);
   Handle<Code> ic = masm()->isolate()->builtins()->StoreIC_Miss();
@@ -2914,7 +2941,7 @@ Handle<Code> LoadStubCompiler::CompileLoadCallback(
   //  -- lr    : return address
   // -----------------------------------
   Label miss;
-  GenerateLoadCallback(object, holder, r0, r2, r3, r1, r4, callback, name,
+  GenerateLoadCallback(object, holder, r0, r2, r3, r1, r4, r5, callback, name,
                        &miss);
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::LOAD_IC);
@@ -2922,6 +2949,43 @@ Handle<Code> LoadStubCompiler::CompileLoadCallback(
   // Return the generated code.
   return GetCode(Code::CALLBACKS, name);
 }
+
+
+#undef __
+#define __ ACCESS_MASM(masm)
+
+
+void LoadStubCompiler::GenerateLoadViaGetter(MacroAssembler* masm,
+                                             Handle<JSFunction> getter) {
+  // ----------- S t a t e -------------
+  //  -- r0    : receiver
+  //  -- r2    : name
+  //  -- lr    : return address
+  // -----------------------------------
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+
+    if (!getter.is_null()) {
+      // Call the JavaScript getter with the receiver on the stack.
+      __ push(r0);
+      ParameterCount actual(0);
+      __ InvokeFunction(getter, actual, CALL_FUNCTION, NullCallWrapper(),
+                        CALL_AS_METHOD);
+    } else {
+      // If we generate a global code snippet for deoptimization only, remember
+      // the place to continue after deoptimization.
+      masm->isolate()->heap()->SetGetterStubDeoptPCOffset(masm->pc_offset());
+    }
+
+    // Restore context register.
+    __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
+  }
+  __ Ret();
+}
+
+
+#undef __
+#define __ ACCESS_MASM(masm())
 
 
 Handle<Code> LoadStubCompiler::CompileLoadViaGetter(
@@ -2940,19 +3004,7 @@ Handle<Code> LoadStubCompiler::CompileLoadViaGetter(
   __ JumpIfSmi(r0, &miss);
   CheckPrototypes(receiver, r0, holder, r3, r4, r1, name, &miss);
 
-  {
-    FrameScope scope(masm(), StackFrame::INTERNAL);
-
-    // Call the JavaScript getter with the receiver on the stack.
-    __ push(r0);
-    ParameterCount actual(0);
-    __ InvokeFunction(getter, actual, CALL_FUNCTION, NullCallWrapper(),
-                      CALL_AS_METHOD);
-
-    // Restore context register.
-    __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
-  }
-  __ Ret();
+  GenerateLoadViaGetter(masm(), getter);
 
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::LOAD_IC);
@@ -3085,7 +3137,7 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadCallback(
   __ cmp(r0, Operand(name));
   __ b(ne, &miss);
 
-  GenerateLoadCallback(receiver, holder, r1, r0, r2, r3, r4, callback, name,
+  GenerateLoadCallback(receiver, holder, r1, r0, r2, r3, r4, r5, callback, name,
                        &miss);
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
@@ -3594,6 +3646,7 @@ static void GenerateSmiKeyCheck(MacroAssembler* masm,
                                 Register scratch0,
                                 Register scratch1,
                                 DwVfpRegister double_scratch0,
+                                DwVfpRegister double_scratch1,
                                 Label* fail) {
   if (CpuFeatures::IsSupported(VFP2)) {
     CpuFeatures::Scope scope(VFP2);
@@ -3610,13 +3663,12 @@ static void GenerateSmiKeyCheck(MacroAssembler* masm,
     __ sub(ip, key, Operand(kHeapObjectTag));
     __ vldr(double_scratch0, ip, HeapNumber::kValueOffset);
     __ EmitVFPTruncate(kRoundToZero,
-                       double_scratch0.low(),
-                       double_scratch0,
                        scratch0,
+                       double_scratch0,
                        scratch1,
+                       double_scratch1,
                        kCheckForInexactConversion);
     __ b(ne, fail);
-    __ vmov(scratch0, double_scratch0.low());
     __ TrySmiTag(scratch0, fail, scratch1);
     __ mov(key, scratch0);
     __ bind(&key_ok);
@@ -3644,7 +3696,7 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
   // have been verified by the caller to not be a smi.
 
   // Check that the key is a smi or a heap number convertible to a smi.
-  GenerateSmiKeyCheck(masm, key, r4, r5, d1, &miss_force_generic);
+  GenerateSmiKeyCheck(masm, key, r4, r5, d1, d2, &miss_force_generic);
 
   __ ldr(r3, FieldMemOperand(receiver, JSObject::kElementsOffset));
   // r3: elements array
@@ -3735,22 +3787,28 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
     __ Ret();
 
     __ bind(&box_int);
-    // Allocate a HeapNumber for the result and perform int-to-double
-    // conversion.  Don't touch r0 or r1 as they are needed if allocation
-    // fails.
-    __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
-    __ AllocateHeapNumber(r5, r3, r4, r6, &slow);
-    // Now we can use r0 for the result as key is not needed any more.
-    __ mov(r0, r5);
-
     if (CpuFeatures::IsSupported(VFP2)) {
       CpuFeatures::Scope scope(VFP2);
+      // Allocate a HeapNumber for the result and perform int-to-double
+      // conversion.  Don't touch r0 or r1 as they are needed if allocation
+      // fails.
+      __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
+
+      __ AllocateHeapNumber(r5, r3, r4, r6, &slow, DONT_TAG_RESULT);
+      // Now we can use r0 for the result as key is not needed any more.
+      __ add(r0, r5, Operand(kHeapObjectTag));
       __ vmov(s0, value);
       __ vcvt_f64_s32(d0, s0);
-      __ sub(r3, r0, Operand(kHeapObjectTag));
-      __ vstr(d0, r3, HeapNumber::kValueOffset);
+      __ vstr(d0, r5, HeapNumber::kValueOffset);
       __ Ret();
     } else {
+      // Allocate a HeapNumber for the result and perform int-to-double
+      // conversion.  Don't touch r0 or r1 as they are needed if allocation
+      // fails.
+      __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
+      __ AllocateHeapNumber(r5, r3, r4, r6, &slow, TAG_RESULT);
+      // Now we can use r0 for the result as key is not needed any more.
+      __ mov(r0, r5);
       Register dst1 = r1;
       Register dst2 = r3;
       FloatingPointHelper::Destination dest =
@@ -3786,13 +3844,12 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       // conversion. Don't use r0 and r1 as AllocateHeapNumber clobbers all
       // registers - also when jumping due to exhausted young space.
       __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
-      __ AllocateHeapNumber(r2, r3, r4, r6, &slow);
+      __ AllocateHeapNumber(r2, r3, r4, r6, &slow, DONT_TAG_RESULT);
 
       __ vcvt_f64_u32(d0, s0);
-      __ sub(r1, r2, Operand(kHeapObjectTag));
-      __ vstr(d0, r1, HeapNumber::kValueOffset);
+      __ vstr(d0, r2, HeapNumber::kValueOffset);
 
-      __ mov(r0, r2);
+      __ add(r0, r2, Operand(kHeapObjectTag));
       __ Ret();
     } else {
       // Check whether unsigned integer fits into smi.
@@ -3824,7 +3881,7 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       // clobbers all registers - also when jumping due to exhausted young
       // space.
       __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
-      __ AllocateHeapNumber(r4, r5, r7, r6, &slow);
+      __ AllocateHeapNumber(r4, r5, r7, r6, &slow, TAG_RESULT);
 
       __ str(hiword, FieldMemOperand(r4, HeapNumber::kExponentOffset));
       __ str(loword, FieldMemOperand(r4, HeapNumber::kMantissaOffset));
@@ -3841,19 +3898,18 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       // AllocateHeapNumber clobbers all registers - also when jumping due to
       // exhausted young space.
       __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
-      __ AllocateHeapNumber(r2, r3, r4, r6, &slow);
+      __ AllocateHeapNumber(r2, r3, r4, r6, &slow, DONT_TAG_RESULT);
       __ vcvt_f64_f32(d0, s0);
-      __ sub(r1, r2, Operand(kHeapObjectTag));
-      __ vstr(d0, r1, HeapNumber::kValueOffset);
+      __ vstr(d0, r2, HeapNumber::kValueOffset);
 
-      __ mov(r0, r2);
+      __ add(r0, r2, Operand(kHeapObjectTag));
       __ Ret();
     } else {
       // Allocate a HeapNumber for the result. Don't use r0 and r1 as
       // AllocateHeapNumber clobbers all registers - also when jumping due to
       // exhausted young space.
       __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
-      __ AllocateHeapNumber(r3, r4, r5, r6, &slow);
+      __ AllocateHeapNumber(r3, r4, r5, r6, &slow, TAG_RESULT);
       // VFP is not available, do manual single to double conversion.
 
       // r2: floating point value (binary32)
@@ -3909,18 +3965,17 @@ void KeyedLoadStubCompiler::GenerateLoadExternalArray(
       // AllocateHeapNumber clobbers all registers - also when jumping due to
       // exhausted young space.
       __ LoadRoot(r6, Heap::kHeapNumberMapRootIndex);
-      __ AllocateHeapNumber(r2, r3, r4, r6, &slow);
-      __ sub(r1, r2, Operand(kHeapObjectTag));
-      __ vstr(d0, r1, HeapNumber::kValueOffset);
+      __ AllocateHeapNumber(r2, r3, r4, r6, &slow, DONT_TAG_RESULT);
+      __ vstr(d0, r2, HeapNumber::kValueOffset);
 
-      __ mov(r0, r2);
+      __ add(r0, r2, Operand(kHeapObjectTag));
       __ Ret();
     } else {
       // Allocate a HeapNumber for the result. Don't use r0 and r1 as
       // AllocateHeapNumber clobbers all registers - also when jumping due to
       // exhausted young space.
       __ LoadRoot(r7, Heap::kHeapNumberMapRootIndex);
-      __ AllocateHeapNumber(r4, r5, r6, r7, &slow);
+      __ AllocateHeapNumber(r4, r5, r6, r7, &slow, TAG_RESULT);
 
       __ str(r2, FieldMemOperand(r4, HeapNumber::kMantissaOffset));
       __ str(r3, FieldMemOperand(r4, HeapNumber::kExponentOffset));
@@ -3978,7 +4033,7 @@ void KeyedStoreStubCompiler::GenerateStoreExternalArray(
   // have been verified by the caller to not be a smi.
 
   // Check that the key is a smi or a heap number convertible to a smi.
-  GenerateSmiKeyCheck(masm, key, r4, r5, d1, &miss_force_generic);
+  GenerateSmiKeyCheck(masm, key, r4, r5, d1, d2, &miss_force_generic);
 
   __ ldr(r3, FieldMemOperand(receiver, JSObject::kElementsOffset));
 
@@ -4313,7 +4368,7 @@ void KeyedLoadStubCompiler::GenerateLoadFastElement(MacroAssembler* masm) {
   // have been verified by the caller to not be a smi.
 
   // Check that the key is a smi or a heap number convertible to a smi.
-  GenerateSmiKeyCheck(masm, r0, r4, r5, d1, &miss_force_generic);
+  GenerateSmiKeyCheck(masm, r0, r4, r5, d1, d2, &miss_force_generic);
 
   // Get the elements array.
   __ ldr(r2, FieldMemOperand(r1, JSObject::kElementsOffset));
@@ -4365,7 +4420,7 @@ void KeyedLoadStubCompiler::GenerateLoadFastDoubleElement(
   // have been verified by the caller to not be a smi.
 
   // Check that the key is a smi or a heap number convertible to a smi.
-  GenerateSmiKeyCheck(masm, key_reg, r4, r5, d1, &miss_force_generic);
+  GenerateSmiKeyCheck(masm, key_reg, r4, r5, d1, d2, &miss_force_generic);
 
   // Get the elements array.
   __ ldr(elements_reg,
@@ -4387,7 +4442,7 @@ void KeyedLoadStubCompiler::GenerateLoadFastDoubleElement(
   // Non-NaN. Allocate a new heap number and copy the double value into it.
   __ LoadRoot(heap_number_map, Heap::kHeapNumberMapRootIndex);
   __ AllocateHeapNumber(heap_number_reg, scratch2, scratch3,
-                        heap_number_map, &slow_allocate_heapnumber);
+                        heap_number_map, &slow_allocate_heapnumber, TAG_RESULT);
 
   // Don't need to reload the upper 32 bits of the double, it's already in
   // scratch.
@@ -4441,7 +4496,7 @@ void KeyedStoreStubCompiler::GenerateStoreFastElement(
   // have been verified by the caller to not be a smi.
 
   // Check that the key is a smi or a heap number convertible to a smi.
-  GenerateSmiKeyCheck(masm, key_reg, r4, r5, d1, &miss_force_generic);
+  GenerateSmiKeyCheck(masm, key_reg, r4, r5, d1, d2, &miss_force_generic);
 
   if (IsFastSmiElementsKind(elements_kind)) {
     __ JumpIfNotSmi(value_reg, &transition_elements_kind);
@@ -4609,7 +4664,7 @@ void KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(
   // have been verified by the caller to not be a smi.
 
   // Check that the key is a smi or a heap number convertible to a smi.
-  GenerateSmiKeyCheck(masm, key_reg, r4, r5, d1, &miss_force_generic);
+  GenerateSmiKeyCheck(masm, key_reg, r4, r5, d1, d2, &miss_force_generic);
 
   __ ldr(elements_reg,
          FieldMemOperand(receiver_reg, JSObject::kElementsOffset));
@@ -4634,6 +4689,7 @@ void KeyedStoreStubCompiler::GenerateStoreFastDoubleElement(
   __ StoreNumberToDoubleElements(value_reg,
                                  key_reg,
                                  receiver_reg,
+                                 // All registers after this are overwritten.
                                  elements_reg,
                                  scratch1,
                                  scratch2,

@@ -112,11 +112,11 @@ Handle<ObjectHashTable> Factory::NewObjectHashTable(int at_least_space_for) {
 }
 
 
-Handle<DescriptorArray> Factory::NewDescriptorArray(int number_of_descriptors) {
+Handle<DescriptorArray> Factory::NewDescriptorArray(int number_of_descriptors,
+                                                    int slack) {
   ASSERT(0 <= number_of_descriptors);
   CALL_HEAP_FUNCTION(isolate(),
-                     DescriptorArray::Allocate(number_of_descriptors,
-                                               DescriptorArray::MAY_BE_SHARED),
+                     DescriptorArray::Allocate(number_of_descriptors, slack),
                      DescriptorArray);
 }
 
@@ -285,10 +285,19 @@ Handle<String> Factory::NewExternalStringFromTwoByte(
 }
 
 
-Handle<Context> Factory::NewGlobalContext() {
+Handle<Context> Factory::NewNativeContext() {
   CALL_HEAP_FUNCTION(
       isolate(),
-      isolate()->heap()->AllocateGlobalContext(),
+      isolate()->heap()->AllocateNativeContext(),
+      Context);
+}
+
+
+Handle<Context> Factory::NewGlobalContext(Handle<JSFunction> function,
+                                          Handle<ScopeInfo> scope_info) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateGlobalContext(*function, *scope_info),
       Context);
 }
 
@@ -497,7 +506,7 @@ Handle<Map> Factory::CopyMap(Handle<Map> src,
 
 
 Handle<Map> Factory::CopyMap(Handle<Map> src) {
-  CALL_HEAP_FUNCTION(isolate(), src->Copy(DescriptorArray::MAY_BE_SHARED), Map);
+  CALL_HEAP_FUNCTION(isolate(), src->Copy(), Map);
 }
 
 
@@ -553,16 +562,16 @@ Handle<JSFunction> Factory::NewFunctionFromSharedFunctionInfo(
 
   result->set_context(*context);
 
-  int index = function_info->SearchOptimizedCodeMap(context->global_context());
+  int index = function_info->SearchOptimizedCodeMap(context->native_context());
   if (!function_info->bound() && index < 0) {
     int number_of_literals = function_info->num_literals();
     Handle<FixedArray> literals = NewFixedArray(number_of_literals, pretenure);
     if (number_of_literals > 0) {
-      // Store the global context in the literals array prefix. This
+      // Store the native context in the literals array prefix. This
       // context will be used when creating object, regexp and array
       // literals in this function.
-      literals->set(JSFunction::kLiteralGlobalContextIndex,
-                    context->global_context());
+      literals->set(JSFunction::kLiteralNativeContextIndex,
+                    context->native_context());
     }
     result->set_literals(*literals);
   }
@@ -1111,7 +1120,7 @@ Handle<JSFunction> Factory::NewFunctionHelper(Handle<String> name,
 Handle<JSFunction> Factory::NewFunction(Handle<String> name,
                                         Handle<Object> prototype) {
   Handle<JSFunction> fun = NewFunctionHelper(name, prototype);
-  fun->set_context(isolate()->context()->global_context());
+  fun->set_context(isolate()->context()->native_context());
   return fun;
 }
 
@@ -1137,7 +1146,7 @@ Handle<JSFunction> Factory::NewFunctionWithoutPrototype(
     LanguageMode language_mode) {
   Handle<JSFunction> fun =
       NewFunctionWithoutPrototypeHelper(name, language_mode);
-  fun->set_context(isolate()->context()->global_context());
+  fun->set_context(isolate()->context()->native_context());
   return fun;
 }
 
@@ -1148,8 +1157,8 @@ Handle<Object> Factory::ToObject(Handle<Object> object) {
 
 
 Handle<Object> Factory::ToObject(Handle<Object> object,
-                                 Handle<Context> global_context) {
-  CALL_HEAP_FUNCTION(isolate(), object->ToObject(*global_context), Object);
+                                 Handle<Context> native_context) {
+  CALL_HEAP_FUNCTION(isolate(), object->ToObject(*native_context), Object);
 }
 
 
@@ -1276,10 +1285,26 @@ Handle<JSFunction> Factory::CreateApiFunction(
   result->shared()->DontAdaptArguments();
 
   // Recursively copy parent templates' accessors, 'data' may be modified.
+  int max_number_of_additional_properties = 0;
+  FunctionTemplateInfo* info = *obj;
+  while (true) {
+    Object* props = info->property_accessors();
+    if (!props->IsUndefined()) {
+      Handle<Object> props_handle(props);
+      NeanderArray props_array(props_handle);
+      max_number_of_additional_properties += props_array.length();
+    }
+    Object* parent = info->parent_template();
+    if (parent->IsUndefined()) break;
+    info = FunctionTemplateInfo::cast(parent);
+  }
+
+  Map::EnsureDescriptorSlack(map, max_number_of_additional_properties);
+
   while (true) {
     Handle<Object> props = Handle<Object>(obj->property_accessors());
     if (!props->IsUndefined()) {
-      Map::CopyAppendCallbackDescriptors(map, props);
+      Map::AppendCallbackDescriptors(map, props);
     }
     Handle<Object> parent = Handle<Object>(obj->parent_template());
     if (parent->IsUndefined()) break;
@@ -1321,7 +1346,7 @@ Handle<MapCache> Factory::AddToMapCache(Handle<Context> context,
 Handle<Map> Factory::ObjectLiteralMapFromCache(Handle<Context> context,
                                                Handle<FixedArray> keys) {
   if (context->map_cache()->IsUndefined()) {
-    // Allocate the new map cache for the global context.
+    // Allocate the new map cache for the native context.
     Handle<MapCache> new_cache = NewMapCache(24);
     context->set_map_cache(*new_cache);
   }

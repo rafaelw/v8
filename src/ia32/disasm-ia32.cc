@@ -1305,6 +1305,14 @@ int DisassemblerIA32::InstructionDecode(v8::internal::Vector<char> out_buffer,
                            NameOfXMMRegister(rm),
                            static_cast<int>(imm8));
             data += 2;
+          } else if (*data == 0x76) {
+            data++;
+            int mod, regop, rm;
+            get_modrm(*data, &mod, &regop, &rm);
+            AppendToBuffer("pcmpeqd %s,%s",
+                           NameOfXMMRegister(regop),
+                           NameOfXMMRegister(rm));
+            data++;
           } else if (*data == 0x90) {
             data++;
             AppendToBuffer("nop");  // 2 byte nop.
@@ -1472,6 +1480,7 @@ int DisassemblerIA32::InstructionDecode(v8::internal::Vector<char> out_buffer,
             switch (b2) {
               case 0x2A: mnem = "cvtsi2sd"; break;
               case 0x2C: mnem = "cvttsd2si"; break;
+              case 0x2D: mnem = "cvtsd2si"; break;
               case 0x51: mnem = "sqrtsd"; break;
               case 0x58: mnem = "addsd"; break;
               case 0x59: mnem = "mulsd"; break;
@@ -1484,7 +1493,7 @@ int DisassemblerIA32::InstructionDecode(v8::internal::Vector<char> out_buffer,
             if (b2 == 0x2A) {
               AppendToBuffer("%s %s,", mnem, NameOfXMMRegister(regop));
               data += PrintRightOperand(data);
-            } else if (b2 == 0x2C) {
+            } else if (b2 == 0x2C || b2 == 0x2D) {
               AppendToBuffer("%s %s,", mnem, NameOfCPURegister(regop));
               data += PrintRightXMMOperand(data);
             } else if (b2 == 0xC2) {

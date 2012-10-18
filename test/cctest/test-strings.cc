@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 
 // Check that we can traverse very deep stacks of ConsStrings using
 // StringInputBuffer.  Check that Get(int) works on very deep stacks
@@ -11,6 +11,7 @@
 
 #include "api.h"
 #include "factory.h"
+#include "objects.h"
 #include "cctest.h"
 #include "zone-inl.h"
 
@@ -690,4 +691,27 @@ TEST(RegExpOverflow) {
       "a.replace(/a/g, a);              ");
   CHECK(result.IsEmpty());
   CHECK(context->HasOutOfMemoryException());
+}
+
+
+TEST(StringReplaceAtomTwoByteResult) {
+  InitializeVM();
+  HandleScope scope;
+  LocalContext context;
+  v8::Local<v8::Value> result = CompileRun(
+      "var subject = 'ascii~only~string~'; "
+      "var replace = '\x80';            "
+      "subject.replace(/~/g, replace);  ");
+  CHECK(result->IsString());
+  Handle<String> string = v8::Utils::OpenHandle(v8::String::Cast(*result));
+  CHECK(string->IsSeqTwoByteString());
+
+  v8::Local<v8::String> expected = v8_str("ascii\x80only\x80string\x80");
+  CHECK(expected->Equals(result));
+}
+
+
+TEST(IsAscii) {
+  CHECK(String::IsAscii(static_cast<char*>(NULL), 0));
+  CHECK(String::IsAscii(static_cast<uc16*>(NULL), 0));
 }

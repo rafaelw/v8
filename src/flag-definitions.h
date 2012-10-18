@@ -132,7 +132,7 @@ public:
 
 // Flags for language modes and experimental language features.
 DEFINE_bool(use_strict, false, "enforce strict mode")
-DEFINE_bool(es5_readonly, false,
+DEFINE_bool(es5_readonly, true,
             "activate correct semantics for inheriting readonliness")
 DEFINE_bool(es52_globals, true,
             "activate new semantics for global var declarations")
@@ -202,6 +202,8 @@ DEFINE_bool(array_bounds_checks_elimination, true,
             "perform array bounds checks elimination")
 DEFINE_bool(array_index_dehoisting, true,
             "perform array index dehoisting")
+DEFINE_bool(dead_code_elimination, true, "use dead code elimination")
+DEFINE_bool(trace_dead_code_elimination, false, "trace dead code elimination")
 
 DEFINE_bool(trace_osr, false, "trace on-stack replacement")
 DEFINE_int(stress_runs, 0, "number of stress runs")
@@ -213,11 +215,14 @@ DEFINE_bool(cache_optimized_code, true,
             "cache optimized code for closures")
 DEFINE_bool(inline_construct, true, "inline constructor calls")
 DEFINE_bool(inline_arguments, true, "inline functions with arguments object")
-DEFINE_bool(inline_accessors, false, "inline JavaScript accessors")
+DEFINE_bool(inline_accessors, true, "inline JavaScript accessors")
 DEFINE_int(loop_weight, 1, "loop weight for representation inference")
 
 DEFINE_bool(optimize_for_in, true,
             "optimize functions containing for-in loops")
+DEFINE_bool(opt_safe_uint32_operations, true,
+            "allow uint32 values on optimize frames if they are used only in"
+            "safe operations")
 
 DEFINE_bool(parallel_recompilation, false,
             "optimizing hot functions asynchronously on a separate thread")
@@ -240,7 +245,8 @@ DEFINE_bool(interrupt_at_exit, false,
             "insert an interrupt check at function exit")
 DEFINE_bool(weighted_back_edges, false,
             "weight back edges by jump distance for interrupt triggering")
-DEFINE_int(interrupt_budget, 5900,
+           // 0x1700 fits in the immediate field of an ARM instruction.
+DEFINE_int(interrupt_budget, 0x1700,
            "execution budget before interrupt is triggered")
 DEFINE_int(type_info_threshold, 15,
            "percentage of ICs that must have type info to allow optimization")
@@ -280,6 +286,10 @@ DEFINE_bool(enable_vfp2, true,
             "enable use of VFP2 instructions if available")
 DEFINE_bool(enable_armv7, true,
             "enable use of ARMv7 instructions if available (ARM only)")
+DEFINE_bool(enable_sudiv, true,
+            "enable use of SDIV and UDIV instructions if available (ARM only)")
+DEFINE_bool(enable_unaligned_accesses, true,
+            "enable unaligned accesses for ARMv7 (ARM only)")
 DEFINE_bool(enable_fpu, true,
             "enable use of MIPS FPU instructions if available (MIPS only)")
 
@@ -321,8 +331,8 @@ DEFINE_int(min_preparse_length, 1024,
            "minimum length for automatic enable preparsing")
 DEFINE_bool(always_full_compiler, false,
             "try to use the dedicated run-once backend for all code")
-DEFINE_bool(trace_bailout, false,
-            "print reasons for falling back to using the classic V8 backend")
+DEFINE_int(max_opt_count, 10,
+           "maximum number of optimization attempts before giving up.")
 
 // compilation-cache.cc
 DEFINE_bool(compilation_cache, true, "enable compilation cache")
@@ -383,13 +393,13 @@ DEFINE_bool(trace_incremental_marking, false,
             "trace progress of the incremental marking")
 DEFINE_bool(track_gc_object_stats, false,
             "track object counts and memory usage")
+#ifdef VERIFY_HEAP
+DEFINE_bool(verify_heap, false, "verify heap pointers before and after GC")
+#endif
 
 // v8.cc
 DEFINE_bool(use_idle_notification, true,
             "Use idle notification to reduce memory footprint.")
-
-DEFINE_bool(send_idle_notification, false,
-            "Send idle notifcation between stress runs.")
 // ic.cc
 DEFINE_bool(use_ic, false, "use inline caching")
 
@@ -411,6 +421,8 @@ DEFINE_bool(never_compact, false,
             "Never perform compaction on full GC - testing only")
 DEFINE_bool(compact_code_space, true,
             "Compact code space on full non-incremental collections")
+DEFINE_bool(incremental_code_compaction, true,
+            "Compact code space on full incremental collections")
 DEFINE_bool(cleanup_code_caches_at_gc, true,
             "Flush inline caches prior to mark compact collection and "
             "flush code caches in maps during mark compact cycle.")
@@ -557,9 +569,8 @@ DEFINE_bool(gc_greedy, false, "perform GC prior to some allocations")
 DEFINE_bool(gc_verbose, false, "print stuff during garbage collection")
 DEFINE_bool(heap_stats, false, "report heap statistics before and after GC")
 DEFINE_bool(code_stats, false, "report code statistics after GC")
-DEFINE_bool(verify_heap, false, "verify heap pointers before and after GC")
-DEFINE_bool(verify_global_context_separation, false,
-            "verify that code holds on to at most one global context after GC")
+DEFINE_bool(verify_native_context_separation, false,
+            "verify that code holds on to at most one native context after GC")
 DEFINE_bool(print_handles, false, "report handles after GC")
 DEFINE_bool(print_global_handles, false, "report global handles after GC")
 
@@ -632,7 +643,8 @@ DEFINE_bool(sliding_state_window, false,
             "Update sliding state window counters.")
 DEFINE_string(logfile, "v8.log", "Specify the name of the log file.")
 DEFINE_bool(ll_prof, false, "Enable low-level linux profiler.")
-
+DEFINE_string(gc_fake_mmap, "/tmp/__v8_gc__",
+              "Specify the name of the file for fake gc mmap used in ll_prof")
 
 //
 // Disassembler only flags

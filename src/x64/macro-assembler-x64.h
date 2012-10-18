@@ -317,6 +317,7 @@ class MacroAssembler: public Assembler {
   void PopSafepointRegisters() { Popad(); }
   // Store the value in register src in the safepoint register stack
   // slot for register dst.
+  void StoreToSafepointRegisterSlot(Register dst, const Immediate& imm);
   void StoreToSafepointRegisterSlot(Register dst, Register src);
   void LoadFromSafepointRegisterSlot(Register dst, Register src);
 
@@ -944,29 +945,43 @@ class MacroAssembler: public Assembler {
                           Register result_reg,
                           Register temp_reg);
 
+  void LoadUint32(XMMRegister dst, Register src, XMMRegister scratch);
+
   void LoadInstanceDescriptors(Register map, Register descriptors);
+  void EnumLength(Register dst, Register map);
+  void NumberOfOwnDescriptors(Register dst, Register map);
 
-  // Abort execution if argument is not a number. Used in debug code.
-  void AbortIfNotNumber(Register object);
+  template<typename Field>
+  void DecodeField(Register reg) {
+    static const int shift = Field::kShift + kSmiShift;
+    static const int mask = Field::kMask >> Field::kShift;
+    shr(reg, Immediate(shift));
+    and_(reg, Immediate(mask));
+    shl(reg, Immediate(kSmiShift));
+  }
 
-  // Abort execution if argument is a smi. Used in debug code.
-  void AbortIfSmi(Register object);
+  // Abort execution if argument is not a number, enabled via --debug-code.
+  void AssertNumber(Register object);
 
-  // Abort execution if argument is not a smi. Used in debug code.
-  void AbortIfNotSmi(Register object);
-  void AbortIfNotSmi(const Operand& object);
+  // Abort execution if argument is a smi, enabled via --debug-code.
+  void AssertNotSmi(Register object);
+
+  // Abort execution if argument is not a smi, enabled via --debug-code.
+  void AssertSmi(Register object);
+  void AssertSmi(const Operand& object);
 
   // Abort execution if a 64 bit register containing a 32 bit payload does not
-  // have zeros in the top 32 bits.
-  void AbortIfNotZeroExtended(Register reg);
+  // have zeros in the top 32 bits, enabled via --debug-code.
+  void AssertZeroExtended(Register reg);
 
-  // Abort execution if argument is a string. Used in debug code.
-  void AbortIfNotString(Register object);
+  // Abort execution if argument is not a string, enabled via --debug-code.
+  void AssertString(Register object);
 
-  // Abort execution if argument is not the root value with the given index.
-  void AbortIfNotRootValue(Register src,
-                           Heap::RootListIndex root_value_index,
-                           const char* message);
+  // Abort execution if argument is not the root value with the given index,
+  // enabled via --debug-code.
+  void AssertRootValue(Register src,
+                       Heap::RootListIndex root_value_index,
+                       const char* message);
 
   // ---------------------------------------------------------------------------
   // Exception handling
@@ -1133,8 +1148,8 @@ class MacroAssembler: public Assembler {
   void LoadContext(Register dst, int context_chain_length);
 
   // Conditionally load the cached Array transitioned map of type
-  // transitioned_kind from the global context if the map in register
-  // map_in_out is the cached Array map in the global context of
+  // transitioned_kind from the native context if the map in register
+  // map_in_out is the cached Array map in the native context of
   // expected_kind.
   void LoadTransitionedArrayMapConditional(
       ElementsKind expected_kind,
@@ -1449,7 +1464,7 @@ inline Operand ContextOperand(Register context, int index) {
 
 
 inline Operand GlobalObjectOperand() {
-  return ContextOperand(rsi, Context::GLOBAL_INDEX);
+  return ContextOperand(rsi, Context::GLOBAL_OBJECT_INDEX);
 }
 
 

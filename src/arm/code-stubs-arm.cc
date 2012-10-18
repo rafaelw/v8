@@ -106,10 +106,10 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
       ? Context::FUNCTION_MAP_INDEX
       : Context::STRICT_MODE_FUNCTION_MAP_INDEX;
 
-  // Compute the function map in the current global context and set that
+  // Compute the function map in the current native context and set that
   // as the map of the allocated object.
-  __ ldr(r2, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ ldr(r2, FieldMemOperand(r2, GlobalObject::kGlobalContextOffset));
+  __ ldr(r2, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ ldr(r2, FieldMemOperand(r2, GlobalObject::kNativeContextOffset));
   __ ldr(r5, MemOperand(r2, Context::SlotOffset(map_index)));
   __ str(r5, FieldMemOperand(r0, HeapObject::kMapOffset));
 
@@ -149,8 +149,8 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
 
   __ IncrementCounter(counters->fast_new_closure_try_optimized(), 1, r6, r7);
 
-  // r2 holds global context, r1 points to fixed array of 3-element entries
-  // (global context, optimized code, literals).
+  // r2 holds native context, r1 points to fixed array of 3-element entries
+  // (native context, optimized code, literals).
   // The optimized code map must never be empty, so check the first elements.
   Label install_optimized;
   // Speculatively move code object into r4.
@@ -242,12 +242,12 @@ void FastNewContextStub::Generate(MacroAssembler* masm) {
   __ str(r1, FieldMemOperand(r0, HeapObject::kMapOffset));
 
   // Set up the fixed slots, copy the global object from the previous context.
-  __ ldr(r2, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
+  __ ldr(r2, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
   __ mov(r1, Operand(Smi::FromInt(0)));
   __ str(r3, MemOperand(r0, Context::SlotOffset(Context::CLOSURE_INDEX)));
   __ str(cp, MemOperand(r0, Context::SlotOffset(Context::PREVIOUS_INDEX)));
   __ str(r1, MemOperand(r0, Context::SlotOffset(Context::EXTENSION_INDEX)));
-  __ str(r2, MemOperand(r0, Context::SlotOffset(Context::GLOBAL_INDEX)));
+  __ str(r2, MemOperand(r0, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
 
   // Initialize the rest of the slots to undefined.
   __ LoadRoot(r1, Heap::kUndefinedValueRootIndex);
@@ -290,9 +290,9 @@ void FastNewBlockContextStub::Generate(MacroAssembler* masm) {
   __ mov(r2, Operand(Smi::FromInt(length)));
   __ str(r2, FieldMemOperand(r0, FixedArray::kLengthOffset));
 
-  // If this block context is nested in the global context we get a smi
+  // If this block context is nested in the native context we get a smi
   // sentinel instead of a function. The block context should get the
-  // canonical empty function of the global context as its closure which
+  // canonical empty function of the native context as its closure which
   // we still have to look up.
   Label after_sentinel;
   __ JumpIfNotSmi(r3, &after_sentinel);
@@ -302,16 +302,16 @@ void FastNewBlockContextStub::Generate(MacroAssembler* masm) {
     __ Assert(eq, message);
   }
   __ ldr(r3, GlobalObjectOperand());
-  __ ldr(r3, FieldMemOperand(r3, GlobalObject::kGlobalContextOffset));
+  __ ldr(r3, FieldMemOperand(r3, GlobalObject::kNativeContextOffset));
   __ ldr(r3, ContextOperand(r3, Context::CLOSURE_INDEX));
   __ bind(&after_sentinel);
 
   // Set up the fixed slots, copy the global object from the previous context.
-  __ ldr(r2, ContextOperand(cp, Context::GLOBAL_INDEX));
+  __ ldr(r2, ContextOperand(cp, Context::GLOBAL_OBJECT_INDEX));
   __ str(r3, ContextOperand(r0, Context::CLOSURE_INDEX));
   __ str(cp, ContextOperand(r0, Context::PREVIOUS_INDEX));
   __ str(r1, ContextOperand(r0, Context::EXTENSION_INDEX));
-  __ str(r2, ContextOperand(r0, Context::GLOBAL_INDEX));
+  __ str(r2, ContextOperand(r0, Context::GLOBAL_OBJECT_INDEX));
 
   // Initialize the rest of the slots to the hole value.
   __ LoadRoot(r1, Heap::kTheHoleValueRootIndex);
@@ -655,11 +655,9 @@ void FloatingPointHelper::LoadNumber(MacroAssembler* masm,
                                      Register scratch1,
                                      Register scratch2,
                                      Label* not_number) {
-  if (FLAG_debug_code) {
-    __ AbortIfNotRootValue(heap_number_map,
-                           Heap::kHeapNumberMapRootIndex,
-                           "HeapNumberMap register clobbered.");
-  }
+  __ AssertRootValue(heap_number_map,
+                     Heap::kHeapNumberMapRootIndex,
+                     "HeapNumberMap register clobbered.");
 
   Label is_smi, done;
 
@@ -716,11 +714,9 @@ void FloatingPointHelper::ConvertNumberToInt32(MacroAssembler* masm,
                                                Register scratch3,
                                                DwVfpRegister double_scratch,
                                                Label* not_number) {
-  if (FLAG_debug_code) {
-    __ AbortIfNotRootValue(heap_number_map,
-                           Heap::kHeapNumberMapRootIndex,
-                           "HeapNumberMap register clobbered.");
-  }
+  __ AssertRootValue(heap_number_map,
+                     Heap::kHeapNumberMapRootIndex,
+                     "HeapNumberMap register clobbered.");
   Label done;
   Label not_in_int32_range;
 
@@ -826,6 +822,7 @@ void FloatingPointHelper::LoadNumberAsInt32Double(MacroAssembler* masm,
                                                   Register object,
                                                   Destination destination,
                                                   DwVfpRegister double_dst,
+                                                  DwVfpRegister double_scratch,
                                                   Register dst1,
                                                   Register dst2,
                                                   Register heap_number_map,
@@ -848,11 +845,9 @@ void FloatingPointHelper::LoadNumberAsInt32Double(MacroAssembler* masm,
   __ b(&done);
 
   __ bind(&obj_is_not_smi);
-  if (FLAG_debug_code) {
-    __ AbortIfNotRootValue(heap_number_map,
-                           Heap::kHeapNumberMapRootIndex,
-                           "HeapNumberMap register clobbered.");
-  }
+  __ AssertRootValue(heap_number_map,
+                     Heap::kHeapNumberMapRootIndex,
+                     "HeapNumberMap register clobbered.");
   __ JumpIfNotHeapNumber(object, heap_number_map, scratch1, not_int32);
 
   // Load the number.
@@ -863,10 +858,10 @@ void FloatingPointHelper::LoadNumberAsInt32Double(MacroAssembler* masm,
     __ vldr(double_dst, scratch1, HeapNumber::kValueOffset);
 
     __ EmitVFPTruncate(kRoundToZero,
-                       single_scratch,
-                       double_dst,
                        scratch1,
+                       double_dst,
                        scratch2,
+                       double_scratch,
                        kCheckForInexactConversion);
 
     // Jump to not_int32 if the operation did not succeed.
@@ -906,7 +901,8 @@ void FloatingPointHelper::LoadNumberAsInt32(MacroAssembler* masm,
                                             Register scratch1,
                                             Register scratch2,
                                             Register scratch3,
-                                            DwVfpRegister double_scratch,
+                                            DwVfpRegister double_scratch0,
+                                            DwVfpRegister double_scratch1,
                                             Label* not_int32) {
   ASSERT(!dst.is(object));
   ASSERT(!scratch1.is(object) && !scratch2.is(object) && !scratch3.is(object));
@@ -918,34 +914,29 @@ void FloatingPointHelper::LoadNumberAsInt32(MacroAssembler* masm,
 
   __ UntagAndJumpIfSmi(dst, object, &done);
 
-  if (FLAG_debug_code) {
-    __ AbortIfNotRootValue(heap_number_map,
-                           Heap::kHeapNumberMapRootIndex,
-                           "HeapNumberMap register clobbered.");
-  }
+  __ AssertRootValue(heap_number_map,
+                     Heap::kHeapNumberMapRootIndex,
+                     "HeapNumberMap register clobbered.");
   __ JumpIfNotHeapNumber(object, heap_number_map, scratch1, not_int32);
 
   // Object is a heap number.
   // Convert the floating point value to a 32-bit integer.
   if (CpuFeatures::IsSupported(VFP2)) {
     CpuFeatures::Scope scope(VFP2);
-    SwVfpRegister single_scratch = double_scratch.low();
+
     // Load the double value.
     __ sub(scratch1, object, Operand(kHeapObjectTag));
-    __ vldr(double_scratch, scratch1, HeapNumber::kValueOffset);
+    __ vldr(double_scratch0, scratch1, HeapNumber::kValueOffset);
 
     __ EmitVFPTruncate(kRoundToZero,
-                       single_scratch,
-                       double_scratch,
+                       dst,
+                       double_scratch0,
                        scratch1,
-                       scratch2,
+                       double_scratch1,
                        kCheckForInexactConversion);
 
     // Jump to not_int32 if the operation did not succeed.
     __ b(ne, not_int32);
-    // Get the result in the destination register.
-    __ vmov(dst, single_scratch);
-
   } else {
     // Load the double value in the destination registers.
     __ ldr(scratch1, FieldMemOperand(object, HeapNumber::kExponentOffset));
@@ -1859,11 +1850,9 @@ void CompareStub::Generate(MacroAssembler* masm) {
 void ToBooleanStub::Generate(MacroAssembler* masm) {
   // This stub overrides SometimesSetsUpAFrame() to return false.  That means
   // we cannot call anything that could cause a GC from this stub.
-  // This stub uses VFP3 instructions.
-  CpuFeatures::Scope scope(VFP2);
-
   Label patch;
   const Register map = r9.is(tos_) ? r7 : r9;
+  const Register temp = map;
 
   // undefined -> false.
   CheckOddball(masm, UNDEFINED, Heap::kUndefinedValueRootIndex, false);
@@ -1916,13 +1905,56 @@ void ToBooleanStub::Generate(MacroAssembler* masm) {
     Label not_heap_number;
     __ CompareRoot(map, Heap::kHeapNumberMapRootIndex);
     __ b(ne, &not_heap_number);
-    __ vldr(d1, FieldMemOperand(tos_, HeapNumber::kValueOffset));
-    __ VFPCompareAndSetFlags(d1, 0.0);
-    // "tos_" is a register, and contains a non zero value by default.
-    // Hence we only need to overwrite "tos_" with zero to return false for
-    // FP_ZERO or FP_NAN cases. Otherwise, by default it returns true.
-    __ mov(tos_, Operand(0, RelocInfo::NONE), LeaveCC, eq);  // for FP_ZERO
-    __ mov(tos_, Operand(0, RelocInfo::NONE), LeaveCC, vs);  // for FP_NAN
+
+    if (CpuFeatures::IsSupported(VFP2)) {
+      CpuFeatures::Scope scope(VFP2);
+
+      __ vldr(d1, FieldMemOperand(tos_, HeapNumber::kValueOffset));
+      __ VFPCompareAndSetFlags(d1, 0.0);
+      // "tos_" is a register, and contains a non zero value by default.
+      // Hence we only need to overwrite "tos_" with zero to return false for
+      // FP_ZERO or FP_NAN cases. Otherwise, by default it returns true.
+      __ mov(tos_, Operand(0, RelocInfo::NONE), LeaveCC, eq);  // for FP_ZERO
+      __ mov(tos_, Operand(0, RelocInfo::NONE), LeaveCC, vs);  // for FP_NAN
+    } else {
+      Label done, not_nan, not_zero;
+      __ ldr(temp, FieldMemOperand(tos_, HeapNumber::kExponentOffset));
+      // -0 maps to false:
+      __ bic(
+          temp, temp, Operand(HeapNumber::kSignMask, RelocInfo::NONE), SetCC);
+      __ b(ne, &not_zero);
+      // If exponent word is zero then the answer depends on the mantissa word.
+      __ ldr(tos_, FieldMemOperand(tos_, HeapNumber::kMantissaOffset));
+      __ jmp(&done);
+
+      // Check for NaN.
+      __ bind(&not_zero);
+      // We already zeroed the sign bit, now shift out the mantissa so we only
+      // have the exponent left.
+      __ mov(temp, Operand(temp, LSR, HeapNumber::kMantissaBitsInTopWord));
+      unsigned int shifted_exponent_mask =
+          HeapNumber::kExponentMask >> HeapNumber::kMantissaBitsInTopWord;
+      __ cmp(temp, Operand(shifted_exponent_mask, RelocInfo::NONE));
+      __ b(ne, &not_nan);  // If exponent is not 0x7ff then it can't be a NaN.
+
+      // Reload exponent word.
+      __ ldr(temp, FieldMemOperand(tos_, HeapNumber::kExponentOffset));
+      __ tst(temp, Operand(HeapNumber::kMantissaMask, RelocInfo::NONE));
+      // If mantissa is not zero then we have a NaN, so return 0.
+      __ mov(tos_, Operand(0, RelocInfo::NONE), LeaveCC, ne);
+      __ b(ne, &done);
+
+      // Load mantissa word.
+      __ ldr(temp, FieldMemOperand(tos_, HeapNumber::kMantissaOffset));
+      __ cmp(temp, Operand(0, RelocInfo::NONE));
+      // If mantissa is not zero then we have a NaN, so return 0.
+      __ mov(tos_, Operand(0, RelocInfo::NONE), LeaveCC, ne);
+      __ b(ne, &done);
+
+      __ bind(&not_nan);
+      __ mov(tos_, Operand(1, RelocInfo::NONE));
+      __ bind(&done);
+    }
     __ Ret();
     __ bind(&not_heap_number);
   }
@@ -2505,9 +2537,9 @@ void BinaryOpStub::GenerateFPOperation(MacroAssembler* masm,
   Register scratch3 = r4;
 
   ASSERT(smi_operands || (not_numbers != NULL));
-  if (smi_operands && FLAG_debug_code) {
-    __ AbortIfNotSmi(left);
-    __ AbortIfNotSmi(right);
+  if (smi_operands) {
+    __ AssertSmi(left);
+    __ AssertSmi(right);
   }
 
   Register heap_number_map = r6;
@@ -2809,7 +2841,6 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
   Register scratch1 = r7;
   Register scratch2 = r9;
   DwVfpRegister double_scratch = d0;
-  SwVfpRegister single_scratch = s3;
 
   Register heap_number_result = no_reg;
   Register heap_number_map = r6;
@@ -2847,6 +2878,7 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
                                                    right,
                                                    destination,
                                                    d7,
+                                                   d8,
                                                    r2,
                                                    r3,
                                                    heap_number_map,
@@ -2858,6 +2890,7 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
                                                    left,
                                                    destination,
                                                    d6,
+                                                   d8,
                                                    r4,
                                                    r5,
                                                    heap_number_map,
@@ -2893,10 +2926,10 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
           // transition.
 
           __ EmitVFPTruncate(kRoundToZero,
-                             single_scratch,
-                             d5,
                              scratch1,
-                             scratch2);
+                             d5,
+                             scratch2,
+                             d8);
 
           if (result_type_ <= BinaryOpIC::INT32) {
             // If the ne condition is set, result does
@@ -2905,7 +2938,6 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
           }
 
           // Check if the result fits in a smi.
-          __ vmov(scratch1, single_scratch);
           __ add(scratch2, scratch1, Operand(0x40000000), SetCC);
           // If not try to return a heap number.
           __ b(mi, &return_heap_number);
@@ -3000,6 +3032,7 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
                                              scratch2,
                                              scratch3,
                                              d0,
+                                             d1,
                                              &transition);
       FloatingPointHelper::LoadNumberAsInt32(masm,
                                              right,
@@ -3009,6 +3042,7 @@ void BinaryOpStub::GenerateInt32Stub(MacroAssembler* masm) {
                                              scratch2,
                                              scratch3,
                                              d0,
+                                             d1,
                                              &transition);
 
       // The ECMA-262 standard specifies that, for shift operations, only the
@@ -3595,13 +3629,13 @@ void MathPowStub::Generate(MacroAssembler* masm) {
       Label not_plus_half;
 
       // Test for 0.5.
-      __ vmov(double_scratch, 0.5);
+      __ vmov(double_scratch, 0.5, scratch);
       __ VFPCompareAndSetFlags(double_exponent, double_scratch);
       __ b(ne, &not_plus_half);
 
       // Calculates square root of base.  Check for the special case of
       // Math.pow(-Infinity, 0.5) == Infinity (ECMA spec, 15.8.2.13).
-      __ vmov(double_scratch, -V8_INFINITY);
+      __ vmov(double_scratch, -V8_INFINITY, scratch);
       __ VFPCompareAndSetFlags(double_base, double_scratch);
       __ vneg(double_result, double_scratch, eq);
       __ b(eq, &done);
@@ -3612,20 +3646,20 @@ void MathPowStub::Generate(MacroAssembler* masm) {
       __ jmp(&done);
 
       __ bind(&not_plus_half);
-      __ vmov(double_scratch, -0.5);
+      __ vmov(double_scratch, -0.5, scratch);
       __ VFPCompareAndSetFlags(double_exponent, double_scratch);
       __ b(ne, &call_runtime);
 
       // Calculates square root of base.  Check for the special case of
       // Math.pow(-Infinity, -0.5) == 0 (ECMA spec, 15.8.2.13).
-      __ vmov(double_scratch, -V8_INFINITY);
+      __ vmov(double_scratch, -V8_INFINITY, scratch);
       __ VFPCompareAndSetFlags(double_base, double_scratch);
       __ vmov(double_result, kDoubleRegZero, eq);
       __ b(eq, &done);
 
       // Add +0 to convert -0 to +0.
       __ vadd(double_scratch, double_base, kDoubleRegZero);
-      __ vmov(double_result, 1.0);
+      __ vmov(double_result, 1.0, scratch);
       __ vsqrt(double_scratch, double_scratch);
       __ vdiv(double_result, double_result, double_scratch);
       __ jmp(&done);
@@ -3660,7 +3694,7 @@ void MathPowStub::Generate(MacroAssembler* masm) {
     __ mov(exponent, scratch);
   }
   __ vmov(double_scratch, double_base);  // Back up base.
-  __ vmov(double_result, 1.0);
+  __ vmov(double_result, 1.0, scratch2);
 
   // Get absolute value of exponent.
   __ cmp(scratch, Operand(0));
@@ -3676,7 +3710,7 @@ void MathPowStub::Generate(MacroAssembler* masm) {
 
   __ cmp(exponent, Operand(0));
   __ b(ge, &done);
-  __ vmov(double_scratch, 1.0);
+  __ vmov(double_scratch, 1.0, scratch);
   __ vdiv(double_result, double_scratch, double_result);
   // Test whether result is zero.  Bail out to check for subnormal result.
   // Due to subnormals, x^-y == (1/x)^y does not hold in all cases.
@@ -4466,14 +4500,14 @@ void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
 
   // r0 = address of new object(s) (tagged)
   // r2 = argument count (tagged)
-  // Get the arguments boilerplate from the current (global) context into r4.
+  // Get the arguments boilerplate from the current native context into r4.
   const int kNormalOffset =
       Context::SlotOffset(Context::ARGUMENTS_BOILERPLATE_INDEX);
   const int kAliasedOffset =
       Context::SlotOffset(Context::ALIASED_ARGUMENTS_BOILERPLATE_INDEX);
 
-  __ ldr(r4, MemOperand(r8, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ ldr(r4, FieldMemOperand(r4, GlobalObject::kGlobalContextOffset));
+  __ ldr(r4, MemOperand(r8, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ ldr(r4, FieldMemOperand(r4, GlobalObject::kNativeContextOffset));
   __ cmp(r1, Operand::Zero());
   __ ldr(r4, MemOperand(r4, kNormalOffset), eq);
   __ ldr(r4, MemOperand(r4, kAliasedOffset), ne);
@@ -4646,9 +4680,9 @@ void ArgumentsAccessStub::GenerateNewStrict(MacroAssembler* masm) {
                         static_cast<AllocationFlags>(TAG_OBJECT |
                                                      SIZE_IN_WORDS));
 
-  // Get the arguments boilerplate from the current (global) context.
-  __ ldr(r4, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ ldr(r4, FieldMemOperand(r4, GlobalObject::kGlobalContextOffset));
+  // Get the arguments boilerplate from the current native context.
+  __ ldr(r4, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ ldr(r4, FieldMemOperand(r4, GlobalObject::kNativeContextOffset));
   __ ldr(r4, MemOperand(r4, Context::SlotOffset(
       Context::STRICT_MODE_ARGUMENTS_BOILERPLATE_INDEX)));
 
@@ -5163,10 +5197,10 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   // Set empty properties FixedArray.
   // Set elements to point to FixedArray allocated right after the JSArray.
   // Interleave operations for better latency.
-  __ ldr(r2, ContextOperand(cp, Context::GLOBAL_INDEX));
+  __ ldr(r2, ContextOperand(cp, Context::GLOBAL_OBJECT_INDEX));
   __ add(r3, r0, Operand(JSRegExpResult::kSize));
   __ mov(r4, Operand(factory->empty_fixed_array()));
-  __ ldr(r2, FieldMemOperand(r2, GlobalObject::kGlobalContextOffset));
+  __ ldr(r2, FieldMemOperand(r2, GlobalObject::kNativeContextOffset));
   __ str(r3, FieldMemOperand(r0, JSObject::kElementsOffset));
   __ ldr(r2, ContextOperand(r2, Context::REGEXP_RESULT_MAP_INDEX));
   __ str(r4, FieldMemOperand(r0, JSObject::kPropertiesOffset));
@@ -5191,12 +5225,12 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   // Set FixedArray length.
   __ mov(r6, Operand(r5, LSL, kSmiTagSize));
   __ str(r6, FieldMemOperand(r3, FixedArray::kLengthOffset));
-  // Fill contents of fixed-array with the-hole.
-  __ mov(r2, Operand(factory->the_hole_value()));
+  // Fill contents of fixed-array with undefined.
+  __ LoadRoot(r2, Heap::kUndefinedValueRootIndex);
   __ add(r3, r3, Operand(FixedArray::kHeaderSize - kHeapObjectTag));
-  // Fill fixed array elements with hole.
+  // Fill fixed array elements with undefined.
   // r0: JSArray, tagged.
-  // r2: the hole.
+  // r2: undefined.
   // r3: Start of elements in FixedArray.
   // r5: Number of elements to fill.
   Label loop;
@@ -5272,7 +5306,8 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
     __ CompareRoot(r4, Heap::kTheHoleValueRootIndex);
     __ b(ne, &call);
     // Patch the receiver on the stack with the global receiver object.
-    __ ldr(r3, MemOperand(cp, Context::SlotOffset(Context::GLOBAL_INDEX)));
+    __ ldr(r3,
+           MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
     __ ldr(r3, FieldMemOperand(r3, GlobalObject::kGlobalReceiverOffset));
     __ str(r3, MemOperand(sp, argc_ * kPointerSize));
     __ bind(&call);
@@ -7022,8 +7057,7 @@ void StringDictionaryLookupStub::GeneratePositiveLookup(MacroAssembler* masm,
   ASSERT(!name.is(scratch1));
   ASSERT(!name.is(scratch2));
 
-  // Assert that name contains a string.
-  if (FLAG_debug_code) __ AbortIfNotString(name);
+  __ AssertString(name);
 
   // Compute the capacity mask.
   __ ldr(scratch1, FieldMemOperand(elements, kCapacityOffset));
@@ -7220,6 +7254,7 @@ static const AheadOfTimeWriteBarrierStubList kAheadOfTime[] = {
 
 #undef REG
 
+
 bool RecordWriteStub::IsPregenerated() {
   for (const AheadOfTimeWriteBarrierStubList* entry = kAheadOfTime;
        !entry->object.is(no_reg);
@@ -7258,6 +7293,11 @@ void RecordWriteStub::GenerateFixedRegStubsAheadOfTime() {
                          kDontSaveFPRegs);
     stub.GetCode()->set_is_pregenerated(true);
   }
+}
+
+
+bool CodeStub::CanUseFPRegisters() {
+  return CpuFeatures::IsSupported(VFP2);
 }
 
 
@@ -7389,6 +7429,16 @@ void RecordWriteStub::CheckNeedsToInformIncrementalMarker(
   Label need_incremental;
   Label need_incremental_pop_scratch;
 
+  __ and_(regs_.scratch0(), regs_.object(), Operand(~Page::kPageAlignmentMask));
+  __ ldr(regs_.scratch1(),
+         MemOperand(regs_.scratch0(),
+                    MemoryChunk::kWriteBarrierCounterOffset));
+  __ sub(regs_.scratch1(), regs_.scratch1(), Operand(1), SetCC);
+  __ str(regs_.scratch1(),
+         MemOperand(regs_.scratch0(),
+                    MemoryChunk::kWriteBarrierCounterOffset));
+  __ b(mi, &need_incremental);
+
   // Let's look at the color of the object:  If it is not black we don't have
   // to inform the incremental marker.
   __ JumpIfBlack(regs_.object(), regs_.scratch0(), regs_.scratch1(), &on_black);
@@ -7509,7 +7559,9 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
   // Array literal has ElementsKind of FAST_DOUBLE_ELEMENTS.
   __ bind(&double_elements);
   __ ldr(r5, FieldMemOperand(r1, JSObject::kElementsOffset));
-  __ StoreNumberToDoubleElements(r0, r3, r1, r5, r6, r7, r9, r2,
+  __ StoreNumberToDoubleElements(r0, r3, r1,
+                                 // Overwrites all regs after this.
+                                 r5, r6, r7, r9, r2,
                                  &slow_elements);
   __ Ret();
 }

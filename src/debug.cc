@@ -97,8 +97,8 @@ static v8::Handle<v8::Context> GetDebugEventContext(Isolate* isolate) {
   // Isolate::context() may have been NULL when "script collected" event
   // occured.
   if (context.is_null()) return v8::Local<v8::Context>();
-  Handle<Context> global_context(context->global_context());
-  return v8::Utils::ToLocal(global_context);
+  Handle<Context> native_context(context->native_context());
+  return v8::Utils::ToLocal(native_context);
 }
 
 
@@ -698,7 +698,7 @@ void Debug::HandleWeakDebugInfo(v8::Persistent<v8::Value> obj, void* data) {
   // We need to clear all breakpoints associated with the function to restore
   // original code and avoid patching the code twice later because
   // the function will live in the heap until next gc, and can be found by
-  // Runtime::FindSharedFunctionInfoInScript.
+  // Debug::FindSharedFunctionInfoInScript.
   BreakLocationIterator it(node->debug_info(), ALL_BREAK_LOCATIONS);
   it.ClearAllDebugBreak();
   debug->RemoveDebugInfo(node->debug_info());
@@ -745,12 +745,15 @@ bool Debug::CompileDebuggerScript(int index) {
       isolate->bootstrapper()->NativesSourceLookup(index);
   Vector<const char> name = Natives::GetScriptName(index);
   Handle<String> script_name = factory->NewStringFromAscii(name);
+  Handle<Context> context = isolate->native_context();
 
   // Compile the script.
   Handle<SharedFunctionInfo> function_info;
   function_info = Compiler::Compile(source_code,
                                     script_name,
-                                    0, 0, NULL, NULL,
+                                    0, 0,
+                                    context,
+                                    NULL, NULL,
                                     Handle<String>::null(),
                                     NATIVES_CODE);
 
@@ -762,13 +765,12 @@ bool Debug::CompileDebuggerScript(int index) {
   }
 
   // Execute the shared function in the debugger context.
-  Handle<Context> context = isolate->global_context();
   bool caught_exception;
   Handle<JSFunction> function =
       factory->NewFunctionFromSharedFunctionInfo(function_info, context);
 
   Handle<Object> exception =
-      Execution::TryCall(function, Handle<Object>(context->global()),
+      Execution::TryCall(function, Handle<Object>(context->global_object()),
                          0, NULL, &caught_exception);
 
   // Check for caught exceptions.
@@ -829,7 +831,7 @@ bool Debug::Load() {
 
   // Expose the builtins object in the debugger context.
   Handle<String> key = isolate_->factory()->LookupAsciiSymbol("builtins");
-  Handle<GlobalObject> global = Handle<GlobalObject>(context->global());
+  Handle<GlobalObject> global = Handle<GlobalObject>(context->global_object());
   RETURN_IF_EMPTY_HANDLE_VALUE(
       isolate_,
       JSReceiver::SetProperty(global, key, Handle<Object>(global->builtins()),
@@ -1095,7 +1097,7 @@ bool Debug::CheckBreakPoint(Handle<Object> break_point_object) {
       factory->LookupAsciiSymbol("IsBreakPointTriggered");
   Handle<JSFunction> check_break_point =
     Handle<JSFunction>(JSFunction::cast(
-        debug_context()->global()->GetPropertyNoExceptionThrown(
+        debug_context()->global_object()->GetPropertyNoExceptionThrown(
             *is_break_point_triggered_symbol)));
 
   // Get the break id as an object.
@@ -1170,11 +1172,10 @@ bool Debug::SetBreakPointForScript(Handle<Script> script,
                                    int* source_position) {
   HandleScope scope(isolate_);
 
-  // No need to call PrepareForBreakPoints because it will be called
-  // implicitly by Runtime::FindSharedFunctionInfoInScript.
-  Object* result = Runtime::FindSharedFunctionInfoInScript(isolate_,
-                                                           script,
-                                                           *source_position);
+  PrepareForBreakPoints();
+
+  // Obtain shared function info for the function.
+  Object* result = FindSharedFunctionInfoInScript(script, *source_position);
   if (result->IsUndefined()) return false;
 
   // Make sure the function has set up the debug info.
@@ -2090,6 +2091,115 @@ void Debug::PrepareForBreakPoints() {
 }
 
 
+Object* Debug::FindSharedFunctionInfoInScript(Handle<Script> script,
+                                              int position) {
+  // Iterate the heap looking for SharedFunctionInfo generated from the
+  // script. The inner most SharedFunctionInfo containing the source position
+  // for the requested break point is found.
+  // NOTE: This might require several heap iterations. If the SharedFunctionInfo
+  // which is found is not compiled it is compiled and the heap is iterated
+  // again as the compilation might create inner functions from the newly
+  // compiled function and the actual requested break point might be in one of
+  // these functions.
+  // NOTE: The below fix-point iteration depends on all functions that cannot be
+  // compiled lazily without a context to not be compiled at all. Compilation
+  // will be triggered at points where we do not need a context.
+  bool done = false;
+  // The current candidate for the source position:
+  int target_start_position = RelocInfo::kNoPosition;
+  Handle<JSFunction> target_function;
+  Handle<SharedFunctionInfo> target;
+  while (!done) {
+    { // Extra scope for iterator and no-allocation.
+      isolate_->heap()->EnsureHeapIsIterable();
+      AssertNoAllocation no_alloc_during_heap_iteration;
+      HeapIterator iterator;
+      for (HeapObject* obj = iterator.next();
+           obj != NULL; obj = iterator.next()) {
+        bool found_next_candidate = false;
+        Handle<JSFunction> function;
+        Handle<SharedFunctionInfo> shared;
+        if (obj->IsJSFunction()) {
+          function = Handle<JSFunction>(JSFunction::cast(obj));
+          shared = Handle<SharedFunctionInfo>(function->shared());
+          ASSERT(shared->allows_lazy_compilation() || shared->is_compiled());
+          found_next_candidate = true;
+        } else if (obj->IsSharedFunctionInfo()) {
+          shared = Handle<SharedFunctionInfo>(SharedFunctionInfo::cast(obj));
+          // Skip functions that we cannot compile lazily without a context,
+          // which is not available here, because there is no closure.
+          found_next_candidate = shared->is_compiled() ||
+              shared->allows_lazy_compilation_without_context();
+        }
+        if (!found_next_candidate) continue;
+        if (shared->script() == *script) {
+          // If the SharedFunctionInfo found has the requested script data and
+          // contains the source position it is a candidate.
+          int start_position = shared->function_token_position();
+          if (start_position == RelocInfo::kNoPosition) {
+            start_position = shared->start_position();
+          }
+          if (start_position <= position &&
+              position <= shared->end_position()) {
+            // If there is no candidate or this function is within the current
+            // candidate this is the new candidate.
+            if (target.is_null()) {
+              target_start_position = start_position;
+              target_function = function;
+              target = shared;
+            } else {
+              if (target_start_position == start_position &&
+                  shared->end_position() == target->end_position()) {
+                // If a top-level function contains only one function
+                // declaration the source for the top-level and the function
+                // is the same. In that case prefer the non top-level function.
+                if (!shared->is_toplevel()) {
+                  target_start_position = start_position;
+                  target_function = function;
+                  target = shared;
+                }
+              } else if (target_start_position <= start_position &&
+                         shared->end_position() <= target->end_position()) {
+                // This containment check includes equality as a function
+                // inside a top-level function can share either start or end
+                // position with the top-level function.
+                target_start_position = start_position;
+                target_function = function;
+                target = shared;
+              }
+            }
+          }
+        }
+      }  // End for loop.
+    }  // End no-allocation scope.
+
+    if (target.is_null()) {
+      return isolate_->heap()->undefined_value();
+    }
+
+    // There will be at least one break point when we are done.
+    has_break_points_ = true;
+
+    // If the candidate found is compiled we are done.
+    done = target->is_compiled();
+    if (!done) {
+      // If the candidate is not compiled, compile it to reveal any inner
+      // functions which might contain the requested source position. This
+      // will compile all inner functions that cannot be compiled without a
+      // context, because Compiler::BuildFunctionInfo checks whether the
+      // debugger is active.
+      if (target_function.is_null()) {
+        SharedFunctionInfo::CompileLazy(target, KEEP_EXCEPTION);
+      } else {
+        JSFunction::CompileLazy(target_function, KEEP_EXCEPTION);
+      }
+    }
+  }  // End while loop.
+
+  return *target;
+}
+
+
 // Ensures the debug information is present for shared.
 bool Debug::EnsureDebugInfo(Handle<SharedFunctionInfo> shared,
                             Handle<JSFunction> function) {
@@ -2299,7 +2409,7 @@ const int Debug::FramePaddingLayout::kPaddingValue = kInitialSize + 1;
 
 
 bool Debug::IsDebugGlobal(GlobalObject* global) {
-  return IsLoaded() && global == debug_context()->global();
+  return IsLoaded() && global == debug_context()->global_object();
 }
 
 
@@ -2311,12 +2421,13 @@ void Debug::ClearMirrorCache() {
   // Clear the mirror cache.
   Handle<String> function_name =
       isolate_->factory()->LookupSymbol(CStrVector("ClearMirrorCache"));
-  Handle<Object> fun(Isolate::Current()->global()->GetPropertyNoExceptionThrown(
+  Handle<Object> fun(
+      Isolate::Current()->global_object()->GetPropertyNoExceptionThrown(
       *function_name));
   ASSERT(fun->IsJSFunction());
   bool caught_exception;
   Execution::TryCall(Handle<JSFunction>::cast(fun),
-      Handle<JSObject>(Debug::debug_context()->global()),
+      Handle<JSObject>(Debug::debug_context()->global_object()),
       0, NULL, &caught_exception);
 }
 
@@ -2403,6 +2514,7 @@ Debugger::Debugger(Isolate* isolate)
       event_listener_data_(Handle<Object>()),
       compiling_natives_(false),
       is_loading_debugger_(false),
+      live_edit_enabled_(true),
       never_unload_debugger_(false),
       force_debugger_active_(false),
       message_handler_(NULL),
@@ -2438,7 +2550,8 @@ Handle<Object> Debugger::MakeJSObject(Vector<const char> constructor_name,
   Handle<String> constructor_str =
       isolate_->factory()->LookupSymbol(constructor_name);
   Handle<Object> constructor(
-      isolate_->global()->GetPropertyNoExceptionThrown(*constructor_str));
+      isolate_->global_object()->GetPropertyNoExceptionThrown(
+          *constructor_str));
   ASSERT(constructor->IsJSFunction());
   if (!constructor->IsJSFunction()) {
     *caught_exception = true;
@@ -2446,7 +2559,7 @@ Handle<Object> Debugger::MakeJSObject(Vector<const char> constructor_name,
   }
   Handle<Object> js_object = Execution::TryCall(
       Handle<JSFunction>::cast(constructor),
-      Handle<JSObject>(isolate_->debug()->debug_context()->global()),
+      Handle<JSObject>(isolate_->debug()->debug_context()->global_object()),
       argc,
       argv,
       caught_exception);
@@ -2668,7 +2781,7 @@ void Debugger::OnAfterCompile(Handle<Script> script,
   Handle<String> update_script_break_points_symbol =
       isolate_->factory()->LookupAsciiSymbol("UpdateScriptBreakPoints");
   Handle<Object> update_script_break_points =
-      Handle<Object>(debug->debug_context()->global()->
+      Handle<Object>(debug->debug_context()->global_object()->
           GetPropertyNoExceptionThrown(*update_script_break_points_symbol));
   if (!update_script_break_points->IsJSFunction()) {
     return;
@@ -2713,6 +2826,7 @@ void Debugger::OnScriptCollected(int id) {
   HandleScope scope(isolate_);
 
   // No more to do if not debugging.
+  if (isolate_->debug()->InDebugger()) return;
   if (!IsDebuggerActive()) return;
   if (!Debugger::EventActive(v8::ScriptCollected)) return;
 
@@ -2824,7 +2938,7 @@ void Debugger::CallJSEventCallback(v8::DebugEvent event,
                             event_listener_data_ };
   bool caught_exception;
   Execution::TryCall(fun,
-                     isolate_->global(),
+                     isolate_->global_object(),
                      ARRAY_SIZE(argv),
                      argv,
                      &caught_exception);

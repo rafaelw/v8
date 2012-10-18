@@ -159,6 +159,7 @@ class StubCache {
 
   Handle<Code> ComputeStoreCallback(Handle<String> name,
                                     Handle<JSObject> receiver,
+                                    Handle<JSObject> holder,
                                     Handle<AccessorInfo> callback,
                                     StrictModeFlag strict_mode);
 
@@ -261,7 +262,7 @@ class StubCache {
   void CollectMatchingMaps(SmallMapList* types,
                            String* name,
                            Code::Flags flags,
-                           Handle<Context> global_context,
+                           Handle<Context> native_context,
                            Zone* zone);
 
   // Generate code for probing the stub cache table.
@@ -550,6 +551,7 @@ class StubCompiler BASE_EMBEDDED {
                             Register scratch1,
                             Register scratch2,
                             Register scratch3,
+                            Register scratch4,
                             Handle<AccessorInfo> callback,
                             Handle<String> name,
                             Label* miss);
@@ -616,6 +618,9 @@ class LoadStubCompiler: public StubCompiler {
                                    Handle<JSObject> object,
                                    Handle<JSObject> holder,
                                    Handle<AccessorInfo> callback);
+
+  static void GenerateLoadViaGetter(MacroAssembler* masm,
+                                    Handle<JSFunction> getter);
 
   Handle<Code> CompileLoadViaGetter(Handle<String> name,
                                     Handle<JSObject> receiver,
@@ -703,9 +708,13 @@ class StoreStubCompiler: public StubCompiler {
                                  Handle<Map> transition,
                                  Handle<String> name);
 
-  Handle<Code> CompileStoreCallback(Handle<JSObject> object,
-                                    Handle<AccessorInfo> callback,
-                                    Handle<String> name);
+  Handle<Code> CompileStoreCallback(Handle<String> name,
+                                    Handle<JSObject> receiver,
+                                    Handle<JSObject> holder,
+                                    Handle<AccessorInfo> callback);
+
+  static void GenerateStoreViaSetter(MacroAssembler* masm,
+                                     Handle<JSFunction> setter);
 
   Handle<Code> CompileStoreViaSetter(Handle<String> name,
                                      Handle<JSObject> receiver,

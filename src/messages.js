@@ -140,7 +140,7 @@ function FormatMessage(message) {
     var messagesDictionary = [
       // Error
       "cyclic_proto",                 ["Cyclic __proto__ value"],
-      "code_gen_from_strings",        ["Code generation from strings disallowed for this context"],
+      "code_gen_from_strings",        ["%0"],
       // TypeError
       "unexpected_token",             ["Unexpected token ", "%0"],
       "unexpected_token_number",      ["Unexpected number"],
@@ -202,6 +202,7 @@ function FormatMessage(message) {
       "proxy_non_object_prop_names",  ["Trap '", "%1", "' returned non-object ", "%0"],
       "proxy_repeated_prop_name",     ["Trap '", "%1", "' returned repeated property name '", "%2", "'"],
       "invalid_weakmap_key",          ["Invalid value used as weak map key"],
+      "not_date_object",              ["this is not a Date object."],
       // RangeError
       "invalid_array_length",         ["Invalid array length"],
       "stack_overflow",               ["Maximum call stack size exceeded"],
@@ -228,7 +229,7 @@ function FormatMessage(message) {
       "strict_catch_variable",        ["Catch variable may not be eval or arguments in strict mode"],
       "too_many_arguments",           ["Too many arguments in function call (only 32766 allowed)"],
       "too_many_parameters",          ["Too many parameters in function definition (only 32766 allowed)"],
-      "too_many_variables",           ["Too many variables declared (only 32767 allowed)"],
+      "too_many_variables",           ["Too many variables declared (only 131071 allowed)"],
       "strict_param_name",            ["Parameter name eval or arguments is not allowed in strict mode"],
       "strict_param_dupe",            ["Strict mode function may not have duplicate parameter names"],
       "strict_var_name",              ["Variable name may not be eval or arguments in strict mode"],
@@ -531,8 +532,8 @@ function ScriptLineCount() {
 
 
 /**
- * Returns the name of script if available, contents of sourceURL comment
- * otherwise. See
+ * If sourceURL comment is available and script starts at zero returns sourceURL
+ * comment contents. Otherwise, script name is returned. See
  * http://fbug.googlecode.com/svn/branches/firebug1.1/docs/ReleaseNotes_1.1.txt
  * for details on using //@ sourceURL comment to identify scritps that don't
  * have name.
@@ -541,14 +542,15 @@ function ScriptLineCount() {
  * otherwise.
  */
 function ScriptNameOrSourceURL() {
-  if (this.name) {
+  if (this.line_offset > 0 || this.column_offset > 0) {
     return this.name;
   }
 
   // The result is cached as on long scripts it takes noticable time to search
   // for the sourceURL.
-  if (this.hasCachedNameOrSourceURL)
-      return this.cachedNameOrSourceURL;
+  if (this.hasCachedNameOrSourceURL) {
+    return this.cachedNameOrSourceURL;
+  }
   this.hasCachedNameOrSourceURL = true;
 
   // TODO(608): the spaces in a regexp below had to be escaped as \040
@@ -766,18 +768,18 @@ function DefineOneShotAccessor(obj, name, fun) {
   // Note that the accessors consistently operate on 'obj', not 'this'.
   // Since the object may occur in someone else's prototype chain we
   // can't rely on 'this' being the same as 'obj'.
-  var hasBeenSet = false;
   var value;
+  var value_factory = fun;
   var getter = function() {
-    if (hasBeenSet) {
+    if (value_factory == null) {
       return value;
     }
-    hasBeenSet = true;
-    value = fun(obj);
+    value = value_factory(obj);
+    value_factory = null;
     return value;
   };
   var setter = function(v) {
-    hasBeenSet = true;
+    value_factory = null;
     value = v;
   };
   %DefineOrRedefineAccessorProperty(obj, name, getter, setter, DONT_ENUM);

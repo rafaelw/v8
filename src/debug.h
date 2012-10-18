@@ -257,6 +257,9 @@ class Debug {
 
   void PrepareForBreakPoints();
 
+  // This function is used in FunctionNameUsing* tests.
+  Object* FindSharedFunctionInfoInScript(Handle<Script> script, int position);
+
   // Returns whether the operation succeeded. Compilation can only be triggered
   // if a valid closure is passed as the second argument, otherwise the shared
   // function needs to be compiled already.
@@ -790,7 +793,6 @@ class Debugger {
   };
   void OnAfterCompile(Handle<Script> script,
                       AfterCompileFlags after_compile_flags);
-  void OnNewFunction(Handle<JSFunction> fun);
   void OnScriptCollected(int id);
   void ProcessDebugEvent(v8::DebugEvent event,
                          Handle<JSObject> event_data,
@@ -872,6 +874,8 @@ class Debugger {
   bool compiling_natives() const { return compiling_natives_; }
   void set_loading_debugger(bool v) { is_loading_debugger_ = v; }
   bool is_loading_debugger() const { return is_loading_debugger_; }
+  void set_live_edit_enabled(bool v) { live_edit_enabled_ = v; }
+  bool live_edit_enabled() const { return live_edit_enabled_; }
   void set_force_debugger_active(bool force_debugger_active) {
     force_debugger_active_ = force_debugger_active;
   }
@@ -900,6 +904,7 @@ class Debugger {
   Handle<Object> event_listener_data_;
   bool compiling_natives_;  // Are we compiling natives?
   bool is_loading_debugger_;  // Are we loading the debugger?
+  bool live_edit_enabled_;  // Enable LiveEdit.
   bool never_unload_debugger_;  // Can we unload the debugger?
   bool force_debugger_active_;  // Activate debugger without event listeners.
   v8::Debug::MessageHandler2 message_handler_;

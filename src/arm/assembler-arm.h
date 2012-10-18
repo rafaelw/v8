@@ -424,8 +424,8 @@ class Operand BASE_EMBEDDED {
   // the instruction this operand is used for is a MOV or MVN instruction the
   // actual instruction to use is required for this calculation. For other
   // instructions instr is ignored.
-  bool is_single_instruction(Instr instr = 0) const;
-  bool must_use_constant_pool() const;
+  bool is_single_instruction(const Assembler* assembler, Instr instr = 0) const;
+  bool must_use_constant_pool(const Assembler* assembler) const;
 
   inline int32_t immediate() const {
     ASSERT(!rm_.is_valid());
@@ -511,6 +511,10 @@ class CpuFeatures : public AllStatic {
     ASSERT(initialized_);
     if (f == VFP3 && !FLAG_enable_vfp3) return false;
     if (f == VFP2 && !FLAG_enable_vfp2) return false;
+    if (f == SUDIV && !FLAG_enable_sudiv) return false;
+    if (f == UNALIGNED_ACCESSES && !FLAG_enable_unaligned_accesses) {
+      return false;
+    }
     return (supported_ & (1u << f)) != 0;
   }
 
@@ -648,8 +652,10 @@ class Assembler : public AssemblerBase {
   // Overrides the default provided by FLAG_debug_code.
   void set_emit_debug_code(bool value) { emit_debug_code_ = value; }
 
-  // Dummy for cross platform compatibility.
-  void set_predictable_code_size(bool value) { }
+  // Avoids using instructions that vary in size in unpredictable ways between
+  // the snapshot and the running VM.  This is needed by the full compiler so
+  // that it can recompile code with debug support and fix the PC.
+  void set_predictable_code_size(bool value) { predictable_code_size_ = value; }
 
   // GetCode emits any pending (non-emitted) code and fills the descriptor
   // desc. GetCode() is idempotent; it returns the same result if no other
@@ -867,6 +873,12 @@ class Assembler : public AssemblerBase {
   void mla(Register dst, Register src1, Register src2, Register srcA,
            SBit s = LeaveCC, Condition cond = al);
 
+  void mls(Register dst, Register src1, Register src2, Register srcA,
+           Condition cond = al);
+
+  void sdiv(Register dst, Register src1, Register src2,
+            Condition cond = al);
+
   void mul(Register dst, Register src1, Register src2,
            SBit s = LeaveCC, Condition cond = al);
 
@@ -1051,6 +1063,7 @@ class Assembler : public AssemblerBase {
 
   void vmov(const DwVfpRegister dst,
             double imm,
+            const Register scratch = no_reg,
             const Condition cond = al);
   void vmov(const SwVfpRegister dst,
             const SwVfpRegister src,
@@ -1169,6 +1182,8 @@ class Assembler : public AssemblerBase {
 
   // Jump unconditionally to given label.
   void jmp(Label* L) { b(L, al); }
+
+  bool predictable_code_size() const { return predictable_code_size_; }
 
   // Check the code size generated from label to here.
   int SizeOfCodeGeneratedSince(Label* label) {
@@ -1450,7 +1465,10 @@ class Assembler : public AssemblerBase {
   friend class BlockConstPoolScope;
 
   PositionsRecorder positions_recorder_;
+
   bool emit_debug_code_;
+  bool predictable_code_size_;
+
   friend class PositionsRecorder;
   friend class EnsureSpace;
 };

@@ -160,7 +160,7 @@ class Scope: public ZoneObject {
   // global scope.  The variable was introduced (possibly from an inner
   // scope) by a reference to an unresolved variable with no intervening
   // with statements or eval calls.
-  Variable* DeclareGlobal(Handle<String> name);
+  Variable* DeclareDynamicGlobal(Handle<String> name);
 
   // Create a new unresolved variable.
   template<class Visitor>
@@ -189,7 +189,7 @@ class Scope: public ZoneObject {
   // Creates a new temporary variable in this scope.  The name is only used
   // for printing and cannot be used to find the variable.  In particular,
   // the only way to get hold of the temporary is by keeping the Variable*
-  // around.
+  // around.  The name should not clash with a legitimate variable names.
   Variable* NewTemporary(Handle<String> name);
 
   // Adds the specific declaration node to the list of declarations in
@@ -378,7 +378,7 @@ class Scope: public ZoneObject {
   // Determine if we can use lazy compilation for this scope without a context.
   bool AllowsLazyCompilationWithoutContext() const;
 
-  // True if the outer context of this scope is always the global context.
+  // True if the outer context of this scope is always the native context.
   bool HasTrivialOuterContext() const;
 
   // True if the outer context allows lazy compilation of this scope.

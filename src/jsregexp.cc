@@ -706,15 +706,16 @@ Handle<JSArray> RegExpImpl::SetLastMatchInfo(Handle<JSArray> last_match_info,
 RegExpImpl::GlobalCache::GlobalCache(Handle<JSRegExp> regexp,
                                      Handle<String> subject,
                                      bool is_global,
-                                     Isolate* isolate) {
+                                     Isolate* isolate)
+  : register_array_(NULL),
+    register_array_size_(0),
+    regexp_(regexp),
+    subject_(subject) {
 #ifdef V8_INTERPRETED_REGEXP
   bool interpreted = true;
 #else
   bool interpreted = false;
 #endif  // V8_INTERPRETED_REGEXP
-
-  regexp_ = regexp;
-  subject_ = subject;
 
   if (regexp_->TypeTag() == JSRegExp::ATOM) {
     static const int kAtomRegistersPerMatch = 2;
@@ -748,12 +749,12 @@ RegExpImpl::GlobalCache::GlobalCache(Handle<JSRegExp> regexp,
 
   // Set state so that fetching the results the first time triggers a call
   // to the compiled regexp.
-  current_match_index_ = max_matches_;
+  current_match_index_ = max_matches_ - 1;
   num_matches_ = max_matches_;
   ASSERT(registers_per_match_ >= 2);  // Each match has at least one capture.
   ASSERT_GE(register_array_size_, registers_per_match_);
   int32_t* last_match =
-      &register_array_[register_array_size_ - registers_per_match_];
+      &register_array_[current_match_index_ * registers_per_match_];
   last_match[0] = -1;
   last_match[1] = 0;
 }
@@ -779,7 +780,7 @@ int32_t* RegExpImpl::GlobalCache::FetchNext() {
     }
 
     int32_t* last_match =
-        &register_array_[register_array_size_ - registers_per_match_];
+        &register_array_[(current_match_index_ - 1) * registers_per_match_];
     int last_end_index = last_match[1];
 
     if (regexp_->TypeTag() == JSRegExp::ATOM) {

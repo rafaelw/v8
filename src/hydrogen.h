@@ -135,9 +135,7 @@ class HBasicBlock: public ZoneObject {
 
   // Add the inlined function exit sequence, adding an HLeaveInlined
   // instruction and updating the bailout environment.
-  void AddLeaveInlined(HValue* return_value,
-                       HBasicBlock* target,
-                       FunctionState* state = NULL);
+  void AddLeaveInlined(HValue* return_value, FunctionState* state);
 
   // If a target block is tagged as an inline function return, all
   // predecessors should contain the inlined exit sequence:
@@ -260,6 +258,7 @@ class HGraph: public ZoneObject {
   void InsertRepresentationChanges();
   void MarkDeoptimizeOnUndefined();
   void ComputeMinusZeroChecks();
+  void ComputeSafeUint32Operations();
   bool ProcessArgumentsObject();
   void EliminateRedundantPhis();
   void EliminateUnreachablePhis();
@@ -269,6 +268,7 @@ class HGraph: public ZoneObject {
   void ReplaceCheckedValues();
   void EliminateRedundantBoundsChecks();
   void DehoistSimpleArrayIndexComputations();
+  void DeadCodeElimination();
   void PropagateDeoptimizingMark();
 
   // Returns false if there are phi-uses of the arguments-object
@@ -337,12 +337,32 @@ class HGraph: public ZoneObject {
     osr_values_.set(values);
   }
 
+  int update_type_change_checksum(int delta) {
+    type_change_checksum_ += delta;
+    return type_change_checksum_;
+  }
+
+  bool use_optimistic_licm() {
+    return use_optimistic_licm_;
+  }
+
+  void set_use_optimistic_licm(bool value) {
+    use_optimistic_licm_ = value;
+  }
+
   void MarkRecursive() {
     is_recursive_ = true;
   }
 
   bool is_recursive() const {
     return is_recursive_;
+  }
+
+  void RecordUint32Instruction(HInstruction* instr) {
+    if (uint32_instructions_ == NULL) {
+      uint32_instructions_ = new(zone()) ZoneList<HInstruction*>(4, zone());
+    }
+    uint32_instructions_->Add(instr, zone());
   }
 
  private:
@@ -372,6 +392,7 @@ class HGraph: public ZoneObject {
   ZoneList<HBasicBlock*> blocks_;
   ZoneList<HValue*> values_;
   ZoneList<HPhi*>* phi_list_;
+  ZoneList<HInstruction*>* uint32_instructions_;
   SetOncePointer<HConstant> undefined_constant_;
   SetOncePointer<HConstant> constant_1_;
   SetOncePointer<HConstant> constant_minus1_;
@@ -387,6 +408,8 @@ class HGraph: public ZoneObject {
   Zone* zone_;
 
   bool is_recursive_;
+  bool use_optimistic_licm_;
+  int type_change_checksum_;
 
   DISALLOW_COPY_AND_ASSIGN(HGraph);
 };
@@ -396,7 +419,13 @@ Zone* HBasicBlock::zone() const { return graph_->zone(); }
 
 
 // Type of stack frame an environment might refer to.
-enum FrameType { JS_FUNCTION, JS_CONSTRUCT, ARGUMENTS_ADAPTOR };
+enum FrameType {
+  JS_FUNCTION,
+  JS_CONSTRUCT,
+  JS_GETTER,
+  JS_SETTER,
+  ARGUMENTS_ADAPTOR
+};
 
 
 class HEnvironment: public ZoneObject {
@@ -405,13 +434,6 @@ class HEnvironment: public ZoneObject {
                Scope* scope,
                Handle<JSFunction> closure,
                Zone* zone);
-
-  HEnvironment* DiscardInlined(bool drop_extra) {
-    HEnvironment* outer = outer_;
-    while (outer->frame_type() != JS_FUNCTION) outer = outer->outer_;
-    if (drop_extra) outer->Drop(1);
-    return outer;
-  }
 
   HEnvironment* arguments_environment() {
     return outer()->frame_type() == ARGUMENTS_ADAPTOR ? outer() : this;
@@ -433,6 +455,9 @@ class HEnvironment: public ZoneObject {
 
   BailoutId ast_id() const { return ast_id_; }
   void set_ast_id(BailoutId id) { ast_id_ = id; }
+
+  HEnterInlined* entry() const { return entry_; }
+  void set_entry(HEnterInlined* entry) { entry_ = entry; }
 
   int length() const { return values_.length(); }
   bool is_special_index(int i) const {
@@ -510,7 +535,14 @@ class HEnvironment: public ZoneObject {
                                 FunctionLiteral* function,
                                 HConstant* undefined,
                                 CallKind call_kind,
-                                bool is_construct) const;
+                                InliningKind inlining_kind) const;
+
+  HEnvironment* DiscardInlined(bool drop_extra) {
+    HEnvironment* outer = outer_;
+    while (outer->frame_type() != JS_FUNCTION) outer = outer->outer_;
+    if (drop_extra) outer->Drop(1);
+    return outer;
+  }
 
   void AddIncomingEdge(HBasicBlock* block, HEnvironment* other);
 
@@ -572,6 +604,7 @@ class HEnvironment: public ZoneObject {
   int specials_count_;
   int local_count_;
   HEnvironment* outer_;
+  HEnterInlined* entry_;
   int pop_count_;
   int push_count_;
   BailoutId ast_id_;
@@ -707,26 +740,18 @@ class TestContext: public AstContext {
 };
 
 
-enum ReturnHandlingFlag {
-  NORMAL_RETURN,
-  DROP_EXTRA_ON_RETURN,
-  CONSTRUCT_CALL_RETURN
-};
-
-
 class FunctionState {
  public:
   FunctionState(HGraphBuilder* owner,
                 CompilationInfo* info,
                 TypeFeedbackOracle* oracle,
-                ReturnHandlingFlag return_handling);
+                InliningKind inlining_kind);
   ~FunctionState();
 
   CompilationInfo* compilation_info() { return compilation_info_; }
   TypeFeedbackOracle* oracle() { return oracle_; }
   AstContext* call_context() { return call_context_; }
-  bool drop_extra() { return return_handling_ == DROP_EXTRA_ON_RETURN; }
-  bool is_construct() { return return_handling_ == CONSTRUCT_CALL_RETURN; }
+  InliningKind inlining_kind() const { return inlining_kind_; }
   HBasicBlock* function_return() { return function_return_; }
   TestContext* test_context() { return test_context_; }
   void ClearInlinedTestContext() {
@@ -756,11 +781,8 @@ class FunctionState {
   // inlined. NULL when not inlining.
   AstContext* call_context_;
 
-  // Indicate whether we have to perform special handling on return from
-  // inlined functions.
-  // - DROP_EXTRA_ON_RETURN: Drop an extra value from the environment.
-  // - CONSTRUCT_CALL_RETURN: Either use allocated receiver or return value.
-  ReturnHandlingFlag return_handling_;
+  // The kind of call which is currently being inlined.
+  InliningKind inlining_kind_;
 
   // When inlining in an effect or value context, this is the return block.
   // It is NULL otherwise.  When inlining in a test context, there are a
@@ -1037,14 +1059,17 @@ class HGraphBuilder: public AstVisitor {
   bool TryInline(CallKind call_kind,
                  Handle<JSFunction> target,
                  int arguments_count,
-                 HValue* receiver,
+                 HValue* implicit_return_value,
                  BailoutId ast_id,
                  BailoutId return_id,
-                 ReturnHandlingFlag return_handling);
+                 InliningKind inlining_kind);
 
   bool TryInlineCall(Call* expr, bool drop_extra = false);
-  bool TryInlineConstruct(CallNew* expr, HValue* receiver);
+  bool TryInlineConstruct(CallNew* expr, HValue* implicit_return_value);
   bool TryInlineGetter(Handle<JSFunction> getter, Property* prop);
+  bool TryInlineSetter(Handle<JSFunction> setter,
+                       Assignment* assignment,
+                       HValue* implicit_return_value);
   bool TryInlineBuiltinMethodCall(Call* expr,
                                   HValue* receiver,
                                   Handle<Map> receiver_map,
@@ -1137,15 +1162,6 @@ class HGraphBuilder: public AstVisitor {
                                    bool is_store,
                                    bool* has_side_effects);
 
-  // Tries to find a JavaScript accessor of the given name in the prototype
-  // chain starting at the given map. Return true iff there is one, including
-  // the corresponding AccessorPair plus its holder (which could be null when
-  // the accessor is found directly in the given map).
-  bool LookupAccessorPair(Handle<Map> map,
-                          Handle<String> name,
-                          Handle<AccessorPair>* accessors,
-                          Handle<JSObject>* holder);
-
   HLoadNamedField* BuildLoadNamedField(HValue* object,
                                        Handle<Map> map,
                                        LookupResult* result,
@@ -1155,7 +1171,7 @@ class HGraphBuilder: public AstVisitor {
                                       Property* expr);
   HInstruction* BuildCallGetter(HValue* object,
                                 Handle<Map> map,
-                                Handle<AccessorPair> accessors,
+                                Handle<JSFunction> getter,
                                 Handle<JSObject> holder);
   HInstruction* BuildLoadNamedMonomorphic(HValue* object,
                                           Handle<String> name,
@@ -1182,7 +1198,7 @@ class HGraphBuilder: public AstVisitor {
   HInstruction* BuildCallSetter(HValue* object,
                                 HValue* value,
                                 Handle<Map> map,
-                                Handle<AccessorPair> accessors,
+                                Handle<JSFunction> setter,
                                 Handle<JSObject> holder);
   HInstruction* BuildStoreNamedMonomorphic(HValue* object,
                                            Handle<String> name,

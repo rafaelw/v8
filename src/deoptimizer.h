@@ -57,18 +57,32 @@ class HeapNumberMaterializationDescriptor BASE_EMBEDDED {
 };
 
 
+class ArgumentsObjectMaterializationDescriptor BASE_EMBEDDED {
+ public:
+  ArgumentsObjectMaterializationDescriptor(Address slot_address, int argc)
+      : slot_address_(slot_address), arguments_length_(argc) { }
+
+  Address slot_address() const { return slot_address_; }
+  int arguments_length() const { return arguments_length_; }
+
+ private:
+  Address slot_address_;
+  int arguments_length_;
+};
+
+
 class OptimizedFunctionVisitor BASE_EMBEDDED {
  public:
   virtual ~OptimizedFunctionVisitor() {}
 
   // Function which is called before iteration of any optimized functions
-  // from given global context.
+  // from given native context.
   virtual void EnterContext(Context* context) = 0;
 
   virtual void VisitFunction(JSFunction* function) = 0;
 
   // Function which is called after iteration of all optimized functions
-  // from given global context.
+  // from given native context.
   virtual void LeaveContext(Context* context) = 0;
 };
 
@@ -196,7 +210,7 @@ class Deoptimizer : public Malloced {
 
   ~Deoptimizer();
 
-  void MaterializeHeapNumbers();
+  void MaterializeHeapObjects(JavaScriptFrameIterator* it);
 #ifdef ENABLE_DEBUGGER_SUPPORT
   void MaterializeHeapNumbersForDebuggerInspectableFrame(
       Address parameters_top,
@@ -284,6 +298,9 @@ class Deoptimizer : public Malloced {
                                       int frame_index);
   void DoComputeConstructStubFrame(TranslationIterator* iterator,
                                    int frame_index);
+  void DoComputeAccessorStubFrame(TranslationIterator* iterator,
+                                  int frame_index,
+                                  bool is_setter_stub_frame);
   void DoTranslateCommand(TranslationIterator* iterator,
                           int frame_index,
                           unsigned output_offset);
@@ -302,6 +319,8 @@ class Deoptimizer : public Malloced {
 
   Object* ComputeLiteral(int index) const;
 
+  void AddArgumentsObject(intptr_t slot_address, int argc);
+  void AddArgumentsObjectValue(intptr_t value);
   void AddDoubleValue(intptr_t slot_address, double value);
 
   static MemoryChunk* CreateCode(BailoutType type);
@@ -337,6 +356,8 @@ class Deoptimizer : public Malloced {
   // Array of output frame descriptions.
   FrameDescription** output_;
 
+  List<Object*> deferred_arguments_objects_values_;
+  List<ArgumentsObjectMaterializationDescriptor> deferred_arguments_objects_;
   List<HeapNumberMaterializationDescriptor> deferred_heap_numbers_;
 
   static const int table_entry_size_;
@@ -559,12 +580,16 @@ class Translation BASE_EMBEDDED {
     BEGIN,
     JS_FRAME,
     CONSTRUCT_STUB_FRAME,
+    GETTER_STUB_FRAME,
+    SETTER_STUB_FRAME,
     ARGUMENTS_ADAPTOR_FRAME,
     REGISTER,
     INT32_REGISTER,
+    UINT32_REGISTER,
     DOUBLE_REGISTER,
     STACK_SLOT,
     INT32_STACK_SLOT,
+    UINT32_STACK_SLOT,
     DOUBLE_STACK_SLOT,
     LITERAL,
     ARGUMENTS_OBJECT,
@@ -590,14 +615,18 @@ class Translation BASE_EMBEDDED {
   void BeginJSFrame(BailoutId node_id, int literal_id, unsigned height);
   void BeginArgumentsAdaptorFrame(int literal_id, unsigned height);
   void BeginConstructStubFrame(int literal_id, unsigned height);
+  void BeginGetterStubFrame(int literal_id);
+  void BeginSetterStubFrame(int literal_id);
   void StoreRegister(Register reg);
   void StoreInt32Register(Register reg);
+  void StoreUint32Register(Register reg);
   void StoreDoubleRegister(DoubleRegister reg);
   void StoreStackSlot(int index);
   void StoreInt32StackSlot(int index);
+  void StoreUint32StackSlot(int index);
   void StoreDoubleStackSlot(int index);
   void StoreLiteral(int literal_id);
-  void StoreArgumentsObject();
+  void StoreArgumentsObject(int args_index, int args_length);
   void MarkDuplicate();
 
   Zone* zone() const { return zone_; }
@@ -644,6 +673,7 @@ class SlotRef BASE_EMBEDDED {
     UNKNOWN,
     TAGGED,
     INT32,
+    UINT32,
     DOUBLE,
     LITERAL
   };
@@ -668,6 +698,16 @@ class SlotRef BASE_EMBEDDED {
           return Handle<Object>(Smi::FromInt(value));
         } else {
           return Isolate::Current()->factory()->NewNumberFromInt(value);
+        }
+      }
+
+      case UINT32: {
+        uint32_t value = Memory::uint32_at(addr_);
+        if (value <= static_cast<uint32_t>(Smi::kMaxValue)) {
+          return Handle<Object>(Smi::FromInt(static_cast<int>(value)));
+        } else {
+          return Isolate::Current()->factory()->NewNumber(
+            static_cast<double>(value));
         }
       }
 

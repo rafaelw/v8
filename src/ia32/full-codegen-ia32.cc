@@ -178,10 +178,13 @@ void FullCodeGenerator::Generate() {
   // Possibly allocate a local context.
   int heap_slots = info->scope()->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
   if (heap_slots > 0) {
-    Comment cmnt(masm_, "[ Allocate local context");
+    Comment cmnt(masm_, "[ Allocate context");
     // Argument to NewContext is the function, which is still in edi.
     __ push(edi);
-    if (heap_slots <= FastNewContextStub::kMaximumSlots) {
+    if (FLAG_harmony_scoping && info->scope()->is_global_scope()) {
+      __ Push(info->scope()->GetScopeInfo());
+      __ CallRuntime(Runtime::kNewGlobalContext, 2);
+    } else if (heap_slots <= FastNewContextStub::kMaximumSlots) {
       FastNewContextStub stub(heap_slots);
       __ CallStub(&stub);
     } else {
@@ -807,10 +810,9 @@ void FullCodeGenerator::VisitVariableDeclaration(
       __ push(esi);
       __ push(Immediate(variable->name()));
       // VariableDeclaration nodes are always introduced in one of four modes.
-      ASSERT(mode == VAR || mode == LET ||
-             mode == CONST || mode == CONST_HARMONY);
-      PropertyAttributes attr = (mode == CONST || mode == CONST_HARMONY)
-          ? READ_ONLY : NONE;
+      ASSERT(IsDeclaredVariableMode(mode));
+      PropertyAttributes attr =
+          IsImmutableVariableMode(mode) ? READ_ONLY : NONE;
       __ push(Immediate(Smi::FromInt(attr)));
       // Push initial value, if any.
       // Note: For variables we must not push an initial value (such as
@@ -1088,18 +1090,27 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
 
 
   // We got a map in register eax. Get the enumeration cache from it.
+  Label no_descriptors;
   __ bind(&use_cache);
+
+  __ EnumLength(edx, eax);
+  __ cmp(edx, Immediate(Smi::FromInt(0)));
+  __ j(equal, &no_descriptors);
+
   __ LoadInstanceDescriptors(eax, ecx);
   __ mov(ecx, FieldOperand(ecx, DescriptorArray::kEnumCacheOffset));
-  __ mov(edx, FieldOperand(ecx, DescriptorArray::kEnumCacheBridgeCacheOffset));
+  __ mov(ecx, FieldOperand(ecx, DescriptorArray::kEnumCacheBridgeCacheOffset));
 
   // Set up the four remaining stack slots.
   __ push(eax);  // Map.
-  __ push(edx);  // Enumeration cache.
-  __ mov(eax, FieldOperand(edx, FixedArray::kLengthOffset));
-  __ push(eax);  // Enumeration cache length (as smi).
+  __ push(ecx);  // Enumeration cache.
+  __ push(edx);  // Number of valid entries for the map in the enum cache.
   __ push(Immediate(Smi::FromInt(0)));  // Initial index.
   __ jmp(&loop);
+
+  __ bind(&no_descriptors);
+  __ add(esp, Immediate(kPointerSize));
+  __ jmp(&exit);
 
   // We got a fixed array in register eax. Iterate through that.
   Label non_proxy;
@@ -1265,9 +1276,9 @@ void FullCodeGenerator::EmitLoadGlobalCheckExtensions(Variable* var,
       __ mov(temp, context);
     }
     __ bind(&next);
-    // Terminate at global context.
+    // Terminate at native context.
     __ cmp(FieldOperand(temp, HeapObject::kMapOffset),
-           Immediate(isolate()->factory()->global_context_map()));
+           Immediate(isolate()->factory()->native_context_map()));
     __ j(equal, &fast, Label::kNear);
     // Check that extension is NULL.
     __ cmp(ContextOperand(temp, Context::EXTENSION_INDEX), Immediate(0));
@@ -2128,37 +2139,15 @@ void FullCodeGenerator::EmitNamedPropertyAssignment(Assignment* expr) {
   ASSERT(prop != NULL);
   ASSERT(prop->key()->AsLiteral() != NULL);
 
-  // If the assignment starts a block of assignments to the same object,
-  // change to slow case to avoid the quadratic behavior of repeatedly
-  // adding fast properties.
-  if (expr->starts_initialization_block()) {
-    __ push(result_register());
-    __ push(Operand(esp, kPointerSize));  // Receiver is now under value.
-    __ CallRuntime(Runtime::kToSlowProperties, 1);
-    __ pop(result_register());
-  }
-
   // Record source code position before IC call.
   SetSourcePosition(expr->position());
   __ mov(ecx, prop->key()->AsLiteral()->handle());
-  if (expr->ends_initialization_block()) {
-    __ mov(edx, Operand(esp, 0));
-  } else {
-    __ pop(edx);
-  }
+  __ pop(edx);
   Handle<Code> ic = is_classic_mode()
       ? isolate()->builtins()->StoreIC_Initialize()
       : isolate()->builtins()->StoreIC_Initialize_Strict();
   CallIC(ic, RelocInfo::CODE_TARGET, expr->AssignmentFeedbackId());
 
-  // If the assignment ends an initialization block, revert to fast case.
-  if (expr->ends_initialization_block()) {
-    __ push(eax);  // Result of assignment, saved even if not needed.
-    __ push(Operand(esp, kPointerSize));  // Receiver is under value.
-    __ CallRuntime(Runtime::kToFastProperties, 1);
-    __ pop(eax);
-    __ Drop(1);
-  }
   PrepareForBailoutForId(expr->AssignmentId(), TOS_REG);
   context()->Plug(eax);
 }
@@ -2170,38 +2159,14 @@ void FullCodeGenerator::EmitKeyedPropertyAssignment(Assignment* expr) {
   // esp[0]            : key
   // esp[kPointerSize] : receiver
 
-  // If the assignment starts a block of assignments to the same object,
-  // change to slow case to avoid the quadratic behavior of repeatedly
-  // adding fast properties.
-  if (expr->starts_initialization_block()) {
-    __ push(result_register());
-    // Receiver is now under the key and value.
-    __ push(Operand(esp, 2 * kPointerSize));
-    __ CallRuntime(Runtime::kToSlowProperties, 1);
-    __ pop(result_register());
-  }
-
   __ pop(ecx);  // Key.
-  if (expr->ends_initialization_block()) {
-    __ mov(edx, Operand(esp, 0));  // Leave receiver on the stack for later.
-  } else {
-    __ pop(edx);
-  }
+  __ pop(edx);
   // Record source code position before IC call.
   SetSourcePosition(expr->position());
   Handle<Code> ic = is_classic_mode()
       ? isolate()->builtins()->KeyedStoreIC_Initialize()
       : isolate()->builtins()->KeyedStoreIC_Initialize_Strict();
   CallIC(ic, RelocInfo::CODE_TARGET, expr->AssignmentFeedbackId());
-
-  // If the assignment ends an initialization block, revert to fast case.
-  if (expr->ends_initialization_block()) {
-    __ pop(edx);
-    __ push(eax);  // Result of assignment, saved even if not needed.
-    __ push(edx);
-    __ CallRuntime(Runtime::kToFastProperties, 1);
-    __ pop(eax);
-  }
 
   PrepareForBailoutForId(expr->AssignmentId(), TOS_REG);
   context()->Plug(eax);
@@ -2642,7 +2607,7 @@ void FullCodeGenerator::EmitIsStringWrapperSafeForDefaultValueOf(
   context()->PrepareTest(&materialize_true, &materialize_false,
                          &if_true, &if_false, &fall_through);
 
-  if (generate_debug_code_) __ AbortIfSmi(eax);
+  __ AssertNotSmi(eax);
 
   // Check whether this map has already been checked to be safe for default
   // valueOf.
@@ -2658,45 +2623,51 @@ void FullCodeGenerator::EmitIsStringWrapperSafeForDefaultValueOf(
   __ j(equal, if_false);
 
   // Look for valueOf symbol in the descriptor array, and indicate false if
-  // found. The type is not checked, so if it is a transition it is a false
-  // negative.
+  // found. Since we omit an enumeration index check, if it is added via a
+  // transition that shares its descriptor array, this is a false positive.
+  Label entry, loop, done;
+
+  // Skip loop if no descriptors are valid.
+  __ NumberOfOwnDescriptors(ecx, ebx);
+  __ cmp(ecx, 0);
+  __ j(equal, &done);
+
   __ LoadInstanceDescriptors(ebx, ebx);
-  __ mov(ecx, FieldOperand(ebx, FixedArray::kLengthOffset));
-  // ebx: descriptor array
-  // ecx: length of descriptor array
+  // ebx: descriptor array.
+  // ecx: valid entries in the descriptor array.
   // Calculate the end of the descriptor array.
   STATIC_ASSERT(kSmiTag == 0);
   STATIC_ASSERT(kSmiTagSize == 1);
   STATIC_ASSERT(kPointerSize == 4);
-  __ lea(ecx, Operand(ebx, ecx, times_2, FixedArray::kHeaderSize));
+  __ imul(ecx, ecx, DescriptorArray::kDescriptorSize);
+  __ lea(ecx, Operand(ebx, ecx, times_2, DescriptorArray::kFirstOffset));
   // Calculate location of the first key name.
-  __ add(ebx,
-         Immediate(FixedArray::kHeaderSize +
-                   DescriptorArray::kFirstIndex * kPointerSize));
+  __ add(ebx, Immediate(DescriptorArray::kFirstOffset));
   // Loop through all the keys in the descriptor array. If one of these is the
   // symbol valueOf the result is false.
-  Label entry, loop;
   __ jmp(&entry);
   __ bind(&loop);
   __ mov(edx, FieldOperand(ebx, 0));
   __ cmp(edx, FACTORY->value_of_symbol());
   __ j(equal, if_false);
-  __ add(ebx, Immediate(kPointerSize));
+  __ add(ebx, Immediate(DescriptorArray::kDescriptorSize * kPointerSize));
   __ bind(&entry);
   __ cmp(ebx, ecx);
   __ j(not_equal, &loop);
 
+  __ bind(&done);
+
   // Reload map as register ebx was used as temporary above.
   __ mov(ebx, FieldOperand(eax, HeapObject::kMapOffset));
 
-  // If a valueOf property is not found on the object check that it's
+  // If a valueOf property is not found on the object check that its
   // prototype is the un-modified String prototype. If not result is false.
   __ mov(ecx, FieldOperand(ebx, Map::kPrototypeOffset));
   __ JumpIfSmi(ecx, if_false);
   __ mov(ecx, FieldOperand(ecx, HeapObject::kMapOffset));
-  __ mov(edx, Operand(esi, Context::SlotOffset(Context::GLOBAL_INDEX)));
+  __ mov(edx, Operand(esi, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
   __ mov(edx,
-         FieldOperand(edx, GlobalObject::kGlobalContextOffset));
+         FieldOperand(edx, GlobalObject::kNativeContextOffset));
   __ cmp(ecx,
          ContextOperand(edx,
                         Context::STRING_FUNCTION_PROTOTYPE_MAP_INDEX));
@@ -2867,7 +2838,7 @@ void FullCodeGenerator::EmitArgumentsLength(CallRuntime* expr) {
   __ mov(eax, Operand(ebx, ArgumentsAdaptorFrameConstants::kLengthOffset));
 
   __ bind(&exit);
-  if (generate_debug_code_) __ AbortIfNotSmi(eax);
+  __ AssertSmi(eax);
   context()->Plug(eax);
 }
 
@@ -2971,8 +2942,8 @@ void FullCodeGenerator::EmitRandomHeapNumber(CallRuntime* expr) {
   __ bind(&heapnumber_allocated);
 
   __ PrepareCallCFunction(1, ebx);
-  __ mov(eax, ContextOperand(context_register(), Context::GLOBAL_INDEX));
-  __ mov(eax, FieldOperand(eax, GlobalObject::kGlobalContextOffset));
+  __ mov(eax, ContextOperand(context_register(), Context::GLOBAL_OBJECT_INDEX));
+  __ mov(eax, FieldOperand(eax, GlobalObject::kNativeContextOffset));
   __ mov(Operand(esp, 0), eax);
   __ CallCFunction(ExternalReference::random_uint32_function(isolate()), 1);
 
@@ -3059,19 +3030,18 @@ void FullCodeGenerator::EmitDateField(CallRuntime* expr) {
 
   VisitForAccumulatorValue(args->at(0));  // Load the object.
 
-  Label runtime, done;
+  Label runtime, done, not_date_object;
   Register object = eax;
   Register result = eax;
   Register scratch = ecx;
 
-#ifdef DEBUG
-  __ AbortIfSmi(object);
+  __ JumpIfSmi(object, &not_date_object);
   __ CmpObjectType(object, JS_DATE_TYPE, scratch);
-  __ Assert(equal, "Trying to get date field from non-date.");
-#endif
+  __ j(not_equal, &not_date_object);
 
   if (index->value() == 0) {
     __ mov(result, FieldOperand(object, JSDate::kValueOffset));
+    __ jmp(&done);
   } else {
     if (index->value() < JSDate::kFirstUncachedField) {
       ExternalReference stamp = ExternalReference::date_cache_stamp(isolate());
@@ -3087,8 +3057,12 @@ void FullCodeGenerator::EmitDateField(CallRuntime* expr) {
     __ mov(Operand(esp, 0), object);
     __ mov(Operand(esp, 1 * kPointerSize), Immediate(index));
     __ CallCFunction(ExternalReference::get_date_field_function(isolate()), 2);
-    __ bind(&done);
+    __ jmp(&done);
   }
+
+  __ bind(&not_date_object);
+  __ CallRuntime(Runtime::kThrowNotDateError, 0);
+  __ bind(&done);
   context()->Plug(result);
 }
 
@@ -3359,10 +3333,11 @@ void FullCodeGenerator::EmitCallFunction(CallRuntime* expr) {
   }
   VisitForAccumulatorValue(args->last());  // Function.
 
-  // Check for proxy.
-  Label proxy, done;
-  __ CmpObjectType(eax, JS_FUNCTION_PROXY_TYPE, ebx);
-  __ j(equal, &proxy);
+  Label runtime, done;
+  // Check for non-function argument (including proxy).
+  __ JumpIfSmi(eax, &runtime);
+  __ CmpObjectType(eax, JS_FUNCTION_TYPE, ebx);
+  __ j(not_equal, &runtime);
 
   // InvokeFunction requires the function in edi. Move it in there.
   __ mov(edi, result_register());
@@ -3372,7 +3347,7 @@ void FullCodeGenerator::EmitCallFunction(CallRuntime* expr) {
   __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
   __ jmp(&done);
 
-  __ bind(&proxy);
+  __ bind(&runtime);
   __ push(eax);
   __ CallRuntime(Runtime::kCall, args->length());
   __ bind(&done);
@@ -3402,7 +3377,7 @@ void FullCodeGenerator::EmitGetFromCache(CallRuntime* expr) {
   int cache_id = Smi::cast(*(args->at(0)->AsLiteral()->handle()))->value();
 
   Handle<FixedArray> jsfunction_result_caches(
-      isolate()->global_context()->jsfunction_result_caches());
+      isolate()->native_context()->jsfunction_result_caches());
   if (jsfunction_result_caches->length() <= cache_id) {
     __ Abort("Attempt to use undefined cache.");
     __ mov(eax, isolate()->factory()->undefined_value());
@@ -3415,9 +3390,9 @@ void FullCodeGenerator::EmitGetFromCache(CallRuntime* expr) {
   Register key = eax;
   Register cache = ebx;
   Register tmp = ecx;
-  __ mov(cache, ContextOperand(esi, Context::GLOBAL_INDEX));
+  __ mov(cache, ContextOperand(esi, Context::GLOBAL_OBJECT_INDEX));
   __ mov(cache,
-         FieldOperand(cache, GlobalObject::kGlobalContextOffset));
+         FieldOperand(cache, GlobalObject::kNativeContextOffset));
   __ mov(cache, ContextOperand(cache, Context::JSFUNCTION_RESULT_CACHES_INDEX));
   __ mov(cache,
          FieldOperand(cache, FixedArray::OffsetOfElementAt(cache_id)));
@@ -3487,9 +3462,7 @@ void FullCodeGenerator::EmitHasCachedArrayIndex(CallRuntime* expr) {
 
   VisitForAccumulatorValue(args->at(0));
 
-  if (generate_debug_code_) {
-    __ AbortIfNotString(eax);
-  }
+  __ AssertString(eax);
 
   Label materialize_true, materialize_false;
   Label* if_true = NULL;
@@ -3512,9 +3485,7 @@ void FullCodeGenerator::EmitGetCachedArrayIndex(CallRuntime* expr) {
   ASSERT(args->length() == 1);
   VisitForAccumulatorValue(args->at(0));
 
-  if (generate_debug_code_) {
-    __ AbortIfNotString(eax);
-  }
+  __ AssertString(eax);
 
   __ mov(eax, FieldOperand(eax, String::kHashFieldOffset));
   __ IndexFromHash(eax, eax);
@@ -4437,7 +4408,7 @@ void FullCodeGenerator::PushFunctionArgumentForContextAllocation() {
   Scope* declaration_scope = scope()->DeclarationScope();
   if (declaration_scope->is_global_scope() ||
       declaration_scope->is_module_scope()) {
-    // Contexts nested in the global context have a canonical empty function
+    // Contexts nested in the native context have a canonical empty function
     // as their closure, not the anonymous closure containing the global
     // code.  Pass a smi sentinel and let the runtime look up the empty
     // function.

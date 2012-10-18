@@ -267,13 +267,6 @@ MaybeObject* Heap::AllocateRawMap() {
 #endif
   MaybeObject* result = map_space_->AllocateRaw(Map::kSize);
   if (result->IsFailure()) old_gen_exhausted_ = true;
-#ifdef DEBUG
-  if (!result->IsFailure()) {
-    // Maps have their own alignment.
-    CHECK((reinterpret_cast<intptr_t>(result) & kMapAlignmentMask) ==
-          static_cast<intptr_t>(kHeapObjectTag));
-  }
-#endif
   return result;
 }
 
@@ -640,9 +633,11 @@ void ExternalStringTable::AddOldString(String* string) {
 
 void ExternalStringTable::ShrinkNewStrings(int position) {
   new_space_strings_.Rewind(position);
+#ifdef VERIFY_HEAP
   if (FLAG_verify_heap) {
     Verify();
   }
+#endif
 }
 
 
@@ -741,28 +736,15 @@ AlwaysAllocateScope::~AlwaysAllocateScope() {
 }
 
 
-LinearAllocationScope::LinearAllocationScope() {
-  HEAP->linear_allocation_scope_depth_++;
-}
-
-
-LinearAllocationScope::~LinearAllocationScope() {
-  HEAP->linear_allocation_scope_depth_--;
-  ASSERT(HEAP->linear_allocation_scope_depth_ >= 0);
-}
-
-
-#ifdef DEBUG
 void VerifyPointersVisitor::VisitPointers(Object** start, Object** end) {
   for (Object** current = start; current < end; current++) {
     if ((*current)->IsHeapObject()) {
       HeapObject* object = HeapObject::cast(*current);
-      ASSERT(HEAP->Contains(object));
-      ASSERT(object->map()->IsMap());
+      CHECK(HEAP->Contains(object));
+      CHECK(object->map()->IsMap());
     }
   }
 }
-#endif
 
 
 double GCTracer::SizeOfHeapObjects() {

@@ -541,7 +541,9 @@ Extension::Extension(const char* name,
       source_(source, source_length_),
       dep_count_(dep_count),
       deps_(deps),
-      auto_enable_(false) { }
+      auto_enable_(false) {
+  CHECK(source != NULL || source_length_ == 0);
+}
 
 
 v8::Handle<Primitive> Undefined() {
@@ -763,13 +765,13 @@ void Context::Exit() {
 }
 
 
-void Context::SetData(v8::Handle<String> data) {
+void Context::SetData(v8::Handle<Value> data) {
   i::Handle<i::Context> env = Utils::OpenHandle(this);
   i::Isolate* isolate = env->GetIsolate();
   if (IsDeadCheck(isolate, "v8::Context::SetData()")) return;
   i::Handle<i::Object> raw_data = Utils::OpenHandle(*data);
-  ASSERT(env->IsGlobalContext());
-  if (env->IsGlobalContext()) {
+  ASSERT(env->IsNativeContext());
+  if (env->IsNativeContext()) {
     env->set_data(*raw_data);
   }
 }
@@ -779,16 +781,13 @@ v8::Local<v8::Value> Context::GetData() {
   i::Handle<i::Context> env = Utils::OpenHandle(this);
   i::Isolate* isolate = env->GetIsolate();
   if (IsDeadCheck(isolate, "v8::Context::GetData()")) {
-    return v8::Local<Value>();
-  }
-  i::Object* raw_result = NULL;
-  ASSERT(env->IsGlobalContext());
-  if (env->IsGlobalContext()) {
-    raw_result = env->data();
-  } else {
     return Local<Value>();
   }
-  i::Handle<i::Object> result(raw_result, isolate);
+  ASSERT(env->IsNativeContext());
+  if (!env->IsNativeContext()) {
+    return Local<Value>();
+  }
+  i::Handle<i::Object> result(env->data(), isolate);
   return Utils::ToLocal(result);
 }
 
@@ -1067,7 +1066,6 @@ static i::Handle<i::AccessorInfo> MakeAccessorInfo(
       v8::PropertyAttribute attributes,
       v8::Handle<AccessorSignature> signature) {
   i::Handle<i::AccessorInfo> obj = FACTORY->NewAccessorInfo();
-  ASSERT(getter != NULL);
   SET_FIELD_WRAPPED(obj, set_getter, getter);
   SET_FIELD_WRAPPED(obj, set_setter, setter);
   if (data.IsEmpty()) data = v8::Undefined();
@@ -1538,9 +1536,10 @@ Local<Script> Script::New(v8::Handle<String> source,
                            name_obj,
                            line_offset,
                            column_offset,
+                           isolate->global_context(),
                            NULL,
                            pre_data_impl,
-                           Utils::OpenHandle(*script_data),
+                           Utils::OpenHandle(*script_data, true),
                            i::NOT_NATIVES_CODE);
     has_pending_exception = result.is_null();
     EXCEPTION_BAILOUT_CHECK(isolate, Local<Script>());
@@ -3270,7 +3269,7 @@ static i::Context* GetCreationContext(i::JSObject* object) {
   } else {
     function = i::JSFunction::cast(constructor);
   }
-  return function->context()->global_context();
+  return function->context()->native_context();
 }
 
 
@@ -3402,7 +3401,7 @@ void v8::Object::SetIndexedPropertiesToPixelData(uint8_t* data, int length) {
   ON_BAILOUT(isolate, "v8::SetElementsToPixelData()", return);
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
-  if (!ApiCheck(length <= i::ExternalPixelArray::kMaxLength,
+  if (!ApiCheck(length >= 0 && length <= i::ExternalPixelArray::kMaxLength,
                 "v8::Object::SetIndexedPropertiesToPixelData()",
                 "length exceeds max acceptable value")) {
     return;
@@ -3458,7 +3457,7 @@ void v8::Object::SetIndexedPropertiesToExternalArrayData(
   ON_BAILOUT(isolate, "v8::SetIndexedPropertiesToExternalArrayData()", return);
   ENTER_V8(isolate);
   i::HandleScope scope(isolate);
-  if (!ApiCheck(length <= i::ExternalArray::kMaxLength,
+  if (!ApiCheck(length >= 0 && length <= i::ExternalArray::kMaxLength,
                 "v8::Object::SetIndexedPropertiesToExternalArrayData()",
                 "length exceeds max acceptable value")) {
     return;
@@ -4087,6 +4086,29 @@ void v8::String::VerifyExternalStringResource(
   CHECK_EQ(expected, value);
 }
 
+void v8::String::VerifyExternalStringResourceBase(
+    v8::String::ExternalStringResourceBase* value, Encoding encoding) const {
+  i::Handle<i::String> str = Utils::OpenHandle(this);
+  const v8::String::ExternalStringResourceBase* expected;
+  Encoding expectedEncoding;
+  if (i::StringShape(*str).IsExternalAscii()) {
+    const void* resource =
+        i::Handle<i::ExternalAsciiString>::cast(str)->resource();
+    expected = reinterpret_cast<const ExternalStringResourceBase*>(resource);
+    expectedEncoding = ASCII_ENCODING;
+  } else if (i::StringShape(*str).IsExternalTwoByte()) {
+    const void* resource =
+        i::Handle<i::ExternalTwoByteString>::cast(str)->resource();
+    expected = reinterpret_cast<const ExternalStringResourceBase*>(resource);
+    expectedEncoding = TWO_BYTE_ENCODING;
+  } else {
+    expected = NULL;
+    expectedEncoding = str->IsAsciiRepresentation() ? ASCII_ENCODING
+                                                    : TWO_BYTE_ENCODING;
+  }
+  CHECK_EQ(expected, value);
+  CHECK_EQ(expectedEncoding, encoding);
+}
 
 const v8::String::ExternalAsciiStringResource*
       v8::String::GetExternalAsciiStringResource() const {
@@ -4261,6 +4283,15 @@ bool v8::V8::SetFunctionEntryHook(FunctionEntryHook entry_hook) {
 }
 
 
+void v8::V8::SetJitCodeEventHandler(
+    JitCodeEventOptions options, JitCodeEventHandler event_handler) {
+  i::Isolate* isolate = i::Isolate::Current();
+  // Ensure that logging is initialized for our isolate.
+  isolate->InitializeLoggingAndCounters();
+  isolate->logger()->SetCodeEventHandler(options, event_handler);
+}
+
+
 bool v8::V8::Dispose() {
   i::Isolate* isolate = i::Isolate::Current();
   if (!ApiCheck(isolate != NULL && isolate->IsDefaultIsolate(),
@@ -4400,7 +4431,7 @@ Persistent<Context> v8::Context::New(
     // Create the environment.
     env = isolate->bootstrapper()->CreateEnvironment(
         isolate,
-        Utils::OpenHandle(*global_object),
+        Utils::OpenHandle(*global_object, true),
         proxy_template,
         extensions);
 
@@ -4444,7 +4475,7 @@ void v8::Context::UseDefaultSecurityToken() {
   }
   ENTER_V8(isolate);
   i::Handle<i::Context> env = Utils::OpenHandle(this);
-  env->set_security_token(env->global());
+  env->set_security_token(env->global_object());
 }
 
 
@@ -4489,7 +4520,7 @@ v8::Local<v8::Context> Context::GetCurrent() {
   if (IsDeadCheck(isolate, "v8::Context::GetCurrent()")) {
     return Local<Context>();
   }
-  i::Handle<i::Object> current = isolate->global_context();
+  i::Handle<i::Object> current = isolate->native_context();
   if (current.is_null()) return Local<Context>();
   i::Handle<i::Context> context = i::Handle<i::Context>::cast(current);
   return Utils::ToLocal(context);
@@ -4502,7 +4533,7 @@ v8::Local<v8::Context> Context::GetCalling() {
     return Local<Context>();
   }
   i::Handle<i::Object> calling =
-      isolate->GetCallingGlobalContext();
+      isolate->GetCallingNativeContext();
   if (calling.is_null()) return Local<Context>();
   i::Handle<i::Context> context = i::Handle<i::Context>::cast(calling);
   return Utils::ToLocal(context);
@@ -4539,9 +4570,9 @@ void Context::ReattachGlobal(Handle<Object> global_object) {
   i::Object** ctx = reinterpret_cast<i::Object**>(this);
   i::Handle<i::Context> context =
       i::Handle<i::Context>::cast(i::Handle<i::Object>(ctx));
-  isolate->bootstrapper()->ReattachGlobal(
-      context,
-      Utils::OpenHandle(*global_object));
+  i::Handle<i::JSGlobalProxy> global_proxy =
+      i::Handle<i::JSGlobalProxy>::cast(Utils::OpenHandle(*global_object));
+  isolate->bootstrapper()->ReattachGlobal(context, global_proxy);
 }
 
 
@@ -4570,6 +4601,22 @@ bool Context::IsCodeGenerationFromStringsAllowed() {
   i::Handle<i::Context> context =
       i::Handle<i::Context>::cast(i::Handle<i::Object>(ctx));
   return !context->allow_code_gen_from_strings()->IsFalse();
+}
+
+
+void Context::SetErrorMessageForCodeGenerationFromStrings(
+    Handle<String> error) {
+  i::Isolate* isolate = i::Isolate::Current();
+  if (IsDeadCheck(isolate,
+      "v8::Context::SetErrorMessageForCodeGenerationFromStrings()")) {
+    return;
+  }
+  ENTER_V8(isolate);
+  i::Object** ctx = reinterpret_cast<i::Object**>(this);
+  i::Handle<i::Context> context =
+      i::Handle<i::Context>::cast(i::Handle<i::Object>(ctx));
+  i::Handle<i::Object> error_handle = Utils::OpenHandle(*error);
+  context->set_error_message_for_code_gen_from_strings(*error_handle);
 }
 
 
@@ -4795,6 +4842,7 @@ Local<String> v8::String::NewExternal(
   EnsureInitializedForIsolate(isolate, "v8::String::NewExternal()");
   LOG_API(isolate, "String::NewExternal");
   ENTER_V8(isolate);
+  CHECK(resource && resource->data());
   i::Handle<i::String> result = NewExternalStringHandle(isolate, resource);
   isolate->heap()->external_string_table()->AddString(*result);
   return Utils::ToLocal(result);
@@ -4815,6 +4863,7 @@ bool v8::String::MakeExternal(v8::String::ExternalStringResource* resource) {
   if (isolate->heap()->IsInGCPostProcessing()) {
     return false;
   }
+  CHECK(resource && resource->data());
   bool result = obj->MakeExternal(resource);
   if (result && !obj->IsSymbol()) {
     isolate->heap()->external_string_table()->AddString(*obj);
@@ -4829,6 +4878,7 @@ Local<String> v8::String::NewExternal(
   EnsureInitializedForIsolate(isolate, "v8::String::NewExternal()");
   LOG_API(isolate, "String::NewExternal");
   ENTER_V8(isolate);
+  CHECK(resource && resource->data());
   i::Handle<i::String> result = NewExternalAsciiStringHandle(isolate, resource);
   isolate->heap()->external_string_table()->AddString(*result);
   return Utils::ToLocal(result);
@@ -4850,6 +4900,7 @@ bool v8::String::MakeExternal(
   if (isolate->heap()->IsInGCPostProcessing()) {
     return false;
   }
+  CHECK(resource && resource->data());
   bool result = obj->MakeExternal(resource);
   if (result && !obj->IsSymbol()) {
     isolate->heap()->external_string_table()->AddString(*obj);
@@ -5634,7 +5685,8 @@ bool Debug::SetDebugEventListener(EventCallback that, Handle<Value> data) {
     foreign =
         isolate->factory()->NewForeign(FUNCTION_ADDR(EventCallbackWrapper));
   }
-  isolate->debugger()->SetEventListener(foreign, Utils::OpenHandle(*data));
+  isolate->debugger()->SetEventListener(foreign,
+                                        Utils::OpenHandle(*data, true));
   return true;
 }
 
@@ -5649,7 +5701,8 @@ bool Debug::SetDebugEventListener2(EventCallback2 that, Handle<Value> data) {
   if (that != NULL) {
     foreign = isolate->factory()->NewForeign(FUNCTION_ADDR(that));
   }
-  isolate->debugger()->SetEventListener(foreign, Utils::OpenHandle(*data));
+  isolate->debugger()->SetEventListener(foreign,
+                                        Utils::OpenHandle(*data, true));
   return true;
 }
 
@@ -5660,7 +5713,7 @@ bool Debug::SetDebugEventListener(v8::Handle<v8::Object> that,
   ON_BAILOUT(isolate, "v8::Debug::SetDebugEventListener()", return false);
   ENTER_V8(isolate);
   isolate->debugger()->SetEventListener(Utils::OpenHandle(*that),
-                                                      Utils::OpenHandle(*data));
+                                        Utils::OpenHandle(*data, true));
   return true;
 }
 
@@ -5799,7 +5852,7 @@ Local<Value> Debug::GetMirror(v8::Handle<v8::Value> obj) {
   v8::HandleScope scope;
   i::Debug* isolate_debug = isolate->debug();
   isolate_debug->Load();
-  i::Handle<i::JSObject> debug(isolate_debug->debug_context()->global());
+  i::Handle<i::JSObject> debug(isolate_debug->debug_context()->global_object());
   i::Handle<i::String> name =
       isolate->factory()->LookupAsciiSymbol("MakeMirror");
   i::Handle<i::Object> fun_obj = i::GetProperty(debug, name);
@@ -5831,12 +5884,27 @@ void Debug::ProcessDebugMessages() {
   i::Execution::ProcessDebugMessages(true);
 }
 
+
 Local<Context> Debug::GetDebugContext() {
   i::Isolate* isolate = i::Isolate::Current();
   EnsureInitializedForIsolate(isolate, "v8::Debug::GetDebugContext()");
   ENTER_V8(isolate);
   return Utils::ToLocal(i::Isolate::Current()->debugger()->GetDebugContext());
 }
+
+
+void Debug::SetLiveEditEnabled(bool enable, Isolate* isolate) {
+  // If no isolate is supplied, use the default isolate.
+  i::Debugger* debugger;
+  if (isolate != NULL) {
+    i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
+    debugger = internal_isolate->debugger();
+  } else {
+    debugger = i::Isolate::GetDefaultIsolateDebugger();
+  }
+  debugger->set_live_edit_enabled(enable);
+}
+
 
 #endif  // ENABLE_DEBUGGER_SUPPORT
 

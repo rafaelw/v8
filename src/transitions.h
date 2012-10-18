@@ -39,10 +39,22 @@ namespace internal {
 
 
 // TransitionArrays are fixed arrays used to hold map transitions for property,
-// constant, and element changes.
-// The format of the these objects is:
-// [0] Elements transition
-// [1] First transition
+// constant, and element changes. They can either be simple transition arrays
+// that store a single property transition, or a full transition array that has
+// space for elements transitions, prototype transitions and multiple property
+// transitons. The details related to property transitions are accessed in the
+// descriptor array of the target map. In the case of a simple transition, the
+// key is also read from the descriptor array of the target map.
+//
+// The simple format of the these objects is:
+// [0] Undefined or back pointer map
+// [1] Single transition
+//
+// The full format is:
+// [0] Undefined or back pointer map
+// [1] Smi(0) or elements transition map
+// [2] Smi(0) or fixed array of prototype transitions
+// [3] First transition
 // [length() - kTransitionSize] Last transition
 class TransitionArray: public FixedArray {
  public:
@@ -50,6 +62,11 @@ class TransitionArray: public FixedArray {
   inline String* GetKey(int transition_number);
   inline void SetKey(int transition_number, String* value);
   inline Object** GetKeySlot(int transition_number);
+  int GetSortedKeyIndex(int transition_number) { return transition_number; }
+
+  String* GetSortedKey(int transition_number) {
+    return GetKey(transition_number);
+  }
 
   inline Map* GetTarget(int transition_number);
   inline void SetTarget(int transition_number, Map* target);
@@ -63,6 +80,11 @@ class TransitionArray: public FixedArray {
   inline bool HasElementsTransition();
   inline void ClearElementsTransition();
 
+  inline Object* back_pointer_storage();
+  inline void set_back_pointer_storage(
+      Object* back_pointer,
+      WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+
   inline FixedArray* GetPrototypeTransitions();
   inline void SetPrototypeTransitions(
       FixedArray* prototype_transitions,
@@ -73,7 +95,7 @@ class TransitionArray: public FixedArray {
 
   // Returns the number of transitions in the array.
   int number_of_transitions() {
-    ASSERT(length() >= kFirstIndex);
+    if (IsSimpleTransition()) return 1;
     int len = length();
     return len <= kFirstIndex ? 0 : (len - kFirstIndex) / kTransitionSize;
   }
@@ -81,7 +103,13 @@ class TransitionArray: public FixedArray {
   inline int number_of_entries() { return number_of_transitions(); }
 
   // Allocate a new transition array with a single entry.
-  static MUST_USE_RESULT MaybeObject* NewWith(String* name, Map* target);
+  static MUST_USE_RESULT MaybeObject* NewWith(
+      SimpleTransitionFlag flag,
+      String* key,
+      Map* target,
+      Object* back_pointer);
+
+  MUST_USE_RESULT MaybeObject* ExtendToFullTransitionArray();
 
   // Copy the transition array, inserting a new transition.
   // TODO(verwaest): This should not cause an existing transition to be
@@ -89,10 +117,9 @@ class TransitionArray: public FixedArray {
   MUST_USE_RESULT MaybeObject* CopyInsert(String* name, Map* target);
 
   // Copy a single transition from the origin array.
-  inline void CopyFrom(TransitionArray* origin,
-                       int origin_transition,
-                       int target_transition,
-                       const WhitenessWitness& witness);
+  inline void NoIncrementalWriteBarrierCopyFrom(TransitionArray* origin,
+                                                int origin_transition,
+                                                int target_transition);
 
   // Search a transition for a given property name.
   inline int Search(String* name);
@@ -100,23 +127,37 @@ class TransitionArray: public FixedArray {
   // Allocates a TransitionArray.
   MUST_USE_RESULT static MaybeObject* Allocate(int number_of_transitions);
 
+  bool IsSimpleTransition() { return length() == kSimpleTransitionSize; }
+  bool IsFullTransitionArray() { return length() >= kFirstIndex; }
+
   // Casting.
   static inline TransitionArray* cast(Object* obj);
 
   // Constant for denoting key was not found.
   static const int kNotFound = -1;
 
-  static const int kElementsTransitionIndex = 0;
-  static const int kPrototypeTransitionsIndex = 1;
-  static const int kFirstIndex = 2;
+  static const int kBackPointerStorageIndex = 0;
 
-  // Layout transition array header.
-  static const int kElementsTransitionOffset = FixedArray::kHeaderSize;
+  // Layout for full transition arrays.
+  static const int kElementsTransitionIndex = 1;
+  static const int kPrototypeTransitionsIndex = 2;
+  static const int kFirstIndex = 3;
+
+  // Layout for simple transition arrays.
+  static const int kSimpleTransitionTarget = 1;
+  static const int kSimpleTransitionSize = 2;
+  static const int kSimpleTransitionIndex = 0;
+  STATIC_ASSERT(kSimpleTransitionIndex != kNotFound);
+
+  static const int kBackPointerStorageOffset = FixedArray::kHeaderSize;
+
+  // Layout for the full transition array header.
+  static const int kElementsTransitionOffset = kBackPointerStorageOffset +
+                                               kPointerSize;
   static const int kPrototypeTransitionsOffset = kElementsTransitionOffset +
                                                  kPointerSize;
-  static const int kFirstOffset = kPrototypeTransitionsOffset + kPointerSize;
 
-  // Layout of map transition.
+  // Layout of map transition entries in full transition arrays.
   static const int kTransitionKey = 0;
   static const int kTransitionTarget = 1;
   static const int kTransitionSize = 2;
@@ -130,7 +171,7 @@ class TransitionArray: public FixedArray {
 #endif
 
 #ifdef DEBUG
-  bool IsSortedNoDuplicates();
+  bool IsSortedNoDuplicates(int valid_entries = -1);
   bool IsConsistentWithBackPointers(Map* current_map);
   bool IsEqualTo(TransitionArray* other);
 #endif
@@ -153,10 +194,9 @@ class TransitionArray: public FixedArray {
            kTransitionTarget;
   }
 
-  inline void Set(int transition_number,
-                  String* key,
-                  Map* target,
-                  const WhitenessWitness&);
+  inline void NoIncrementalWriteBarrierSet(int transition_number,
+                                           String* key,
+                                           Map* target);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(TransitionArray);
 };

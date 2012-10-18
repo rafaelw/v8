@@ -44,6 +44,9 @@ test-heap-profiler/HeapSnapshotsDiff: PASS || FAIL
 test-serialize/TestThatAlwaysFails: FAIL
 test-serialize/DependentTestThatAlwaysFails: FAIL
 
+# This test always fails.  It tests that LiveEdit causes abort when turned off.
+test-debug/LiveEditDisabled: FAIL
+
 # TODO(gc): Temporarily disabled in the GC branch.
 test-log/EquivalenceOfLoggingAndTraversal: PASS || FAIL
 
@@ -65,11 +68,6 @@ test-api/OutOfMemoryNested: SKIP
 # BUG(355): Test crashes on ARM.
 test-log/ProfLazyMode: SKIP
 
-# BUG(945): Tests using Socket cannot be run in parallel.
-test-debug/DebuggerAgent: SKIP
-test-debug/DebuggerAgentProtocolOverflowHeader: SKIP
-test-sockets/Socket: SKIP
-
 # BUG(1075): Unresolved crashes.
 test-serialize/Deserialize: SKIP
 test-serialize/DeserializeFromSecondSerializationAndRunScript2: SKIP
@@ -86,8 +84,3 @@ test-log/ProfLazyMode: SKIP
 
 # platform-tls.h does not contain an ANDROID-related header.
 test-platform-tls/FastTLS: SKIP
-
-# BUG(945): Tests using Socket cannot be run in parallel.
-test-debug/DebuggerAgent: SKIP
-test-debug/DebuggerAgentProtocolOverflowHeader: SKIP
-test-sockets/Socket: SKIP

@@ -77,6 +77,9 @@ static unsigned CpuFeaturesImpliedByCompiler() {
 #endif  // defined(CAN_USE_ARMV7_INSTRUCTIONS) && defined(__VFP_FP__)
         // && !defined(__SOFTFP__)
 #endif  // _arm__
+  if (answer & (1u << ARMv7)) {
+    answer |= 1u << UNALIGNED_ACCESSES;
+  }
 
   return answer;
 }
@@ -110,6 +113,10 @@ void CpuFeatures::Probe() {
   if (FLAG_enable_armv7) {
     supported_ |= 1u << ARMv7;
   }
+
+  if (FLAG_enable_sudiv) {
+    supported_ |= 1u << SUDIV;
+  }
 #else  // __arm__
   // Probe for additional features not already known to be available.
   if (!IsSupported(VFP3) && OS::ArmCpuHasFeature(VFP3)) {
@@ -123,6 +130,14 @@ void CpuFeatures::Probe() {
 
   if (!IsSupported(ARMv7) && OS::ArmCpuHasFeature(ARMv7)) {
     found_by_runtime_probing_ |= 1u << ARMv7;
+  }
+
+  if (!IsSupported(SUDIV) && OS::ArmCpuHasFeature(SUDIV)) {
+    found_by_runtime_probing_ |= 1u << SUDIV;
+  }
+
+  if (!IsSupported(UNALIGNED_ACCESSES) && OS::ArmCpuHasFeature(ARMv7)) {
+    found_by_runtime_probing_ |= 1u << UNALIGNED_ACCESSES;
   }
 
   supported_ |= found_by_runtime_probing_;
@@ -302,7 +317,8 @@ Assembler::Assembler(Isolate* arg_isolate, void* buffer, int buffer_size)
     : AssemblerBase(arg_isolate),
       recorded_ast_id_(TypeFeedbackId::None()),
       positions_recorder_(this),
-      emit_debug_code_(FLAG_debug_code) {
+      emit_debug_code_(FLAG_debug_code),
+      predictable_code_size_(false) {
   if (buffer == NULL) {
     // Do our own buffer management.
     if (buffer_size <= kMinimalBufferSize) {
@@ -784,13 +800,14 @@ static bool fits_shifter(uint32_t imm32,
 // if they can be encoded in the ARM's 12 bits of immediate-offset instruction
 // space.  There is no guarantee that the relocated location can be similarly
 // encoded.
-bool Operand::must_use_constant_pool() const {
+bool Operand::must_use_constant_pool(const Assembler* assembler) const {
   if (rmode_ == RelocInfo::EXTERNAL_REFERENCE) {
 #ifdef DEBUG
     if (!Serializer::enabled()) {
       Serializer::TooLateToEnableNow();
     }
 #endif  // def DEBUG
+    if (assembler != NULL && assembler->predictable_code_size()) return true;
     return Serializer::enabled();
   } else if (rmode_ == RelocInfo::NONE) {
     return false;
@@ -799,16 +816,17 @@ bool Operand::must_use_constant_pool() const {
 }
 
 
-bool Operand::is_single_instruction(Instr instr) const {
+bool Operand::is_single_instruction(const Assembler* assembler,
+                                    Instr instr) const {
   if (rm_.is_valid()) return true;
   uint32_t dummy1, dummy2;
-  if (must_use_constant_pool() ||
+  if (must_use_constant_pool(assembler) ||
       !fits_shifter(imm32_, &dummy1, &dummy2, &instr)) {
     // The immediate operand cannot be encoded as a shifter operand, or use of
     // constant pool is required. For a mov instruction not setting the
     // condition code additional instruction conventions can be used.
     if ((instr & ~kCondMask) == 13*B21) {  // mov, S not set
-      if (must_use_constant_pool() ||
+      if (must_use_constant_pool(assembler) ||
           !CpuFeatures::IsSupported(ARMv7)) {
         // mov instruction will be an ldr from constant pool (one instruction).
         return true;
@@ -842,7 +860,7 @@ void Assembler::addrmod1(Instr instr,
     // Immediate.
     uint32_t rotate_imm;
     uint32_t immed_8;
-    if (x.must_use_constant_pool() ||
+    if (x.must_use_constant_pool(this) ||
         !fits_shifter(x.imm32_, &rotate_imm, &immed_8, &instr)) {
       // The immediate operand cannot be encoded as a shifter operand, so load
       // it first to register ip and change the original instruction to use ip.
@@ -851,7 +869,7 @@ void Assembler::addrmod1(Instr instr,
       CHECK(!rn.is(ip));  // rn should never be ip, or will be trashed
       Condition cond = Instruction::ConditionField(instr);
       if ((instr & ~kCondMask) == 13*B21) {  // mov, S not set
-        if (x.must_use_constant_pool() ||
+        if (x.must_use_constant_pool(this) ||
             !CpuFeatures::IsSupported(ARMv7)) {
           RecordRelocInfo(x.rmode_, x.imm32_);
           ldr(rd, MemOperand(pc, 0), cond);
@@ -863,7 +881,7 @@ void Assembler::addrmod1(Instr instr,
       } else {
         // If this is not a mov or mvn instruction we may still be able to avoid
         // a constant pool entry by using mvn or movw.
-        if (!x.must_use_constant_pool() &&
+        if (!x.must_use_constant_pool(this) &&
             (instr & kMovMvnMask) != kMovMvnPattern) {
           mov(ip, x, LeaveCC, cond);
         } else {
@@ -1204,6 +1222,22 @@ void Assembler::mla(Register dst, Register src1, Register src2, Register srcA,
 }
 
 
+void Assembler::mls(Register dst, Register src1, Register src2, Register srcA,
+                    Condition cond) {
+  ASSERT(!dst.is(pc) && !src1.is(pc) && !src2.is(pc) && !srcA.is(pc));
+  emit(cond | B22 | B21 | dst.code()*B16 | srcA.code()*B12 |
+       src2.code()*B8 | B7 | B4 | src1.code());
+}
+
+
+void Assembler::sdiv(Register dst, Register src1, Register src2,
+                     Condition cond) {
+  ASSERT(!dst.is(pc) && !src1.is(pc) && !src2.is(pc));
+  emit(cond | B26 | B25| B24 | B20 | dst.code()*B16 | 0xf * B12 |
+       src2.code()*B8 | B4 | src1.code());
+}
+
+
 void Assembler::mul(Register dst, Register src1, Register src2,
                     SBit s, Condition cond) {
   ASSERT(!dst.is(pc) && !src1.is(pc) && !src2.is(pc));
@@ -1388,7 +1422,7 @@ void Assembler::msr(SRegisterFieldMask fields, const Operand& src,
     // Immediate.
     uint32_t rotate_imm;
     uint32_t immed_8;
-    if (src.must_use_constant_pool() ||
+    if (src.must_use_constant_pool(this) ||
         !fits_shifter(src.imm32_, &rotate_imm, &immed_8, NULL)) {
       // Immediate operand cannot be encoded, load it first to register ip.
       RecordRelocInfo(src.rmode_, src.imm32_);
@@ -1823,7 +1857,7 @@ void Assembler::vstr(const SwVfpRegister src,
                      const Condition cond) {
   ASSERT(!operand.rm().is_valid());
   ASSERT(operand.am_ == Offset);
-  vldr(src, operand.rn(), operand.offset(), cond);
+  vstr(src, operand.rn(), operand.offset(), cond);
 }
 
 
@@ -1972,6 +2006,7 @@ static bool FitsVMOVDoubleImmediate(double d, uint32_t *encoding) {
 
 void Assembler::vmov(const DwVfpRegister dst,
                      double imm,
+                     const Register scratch,
                      const Condition cond) {
   // Dd = immediate
   // Instruction details available in ARM DDI 0406B, A8-640.
@@ -1986,22 +2021,22 @@ void Assembler::vmov(const DwVfpRegister dst,
     // using vldr from a constant pool.
     uint32_t lo, hi;
     DoubleAsTwoUInt32(imm, &lo, &hi);
+    mov(ip, Operand(lo));
 
-    if (lo == hi) {
-      // If the lo and hi parts of the double are equal, the literal is easier
-      // to create. This is the case with 0.0.
-      mov(ip, Operand(lo));
-      vmov(dst, ip, ip);
-    } else {
+    if (scratch.is(no_reg)) {
       // Move the low part of the double into the lower of the corresponsing S
       // registers of D register dst.
-      mov(ip, Operand(lo));
       vmov(dst.low(), ip, cond);
 
       // Move the high part of the double into the higher of the corresponsing S
       // registers of D register dst.
       mov(ip, Operand(hi));
       vmov(dst.high(), ip, cond);
+    } else {
+      // Move the low and high parts of the double to a D register in one
+      // instruction.
+      mov(scratch, Operand(hi));
+      vmov(dst, ip, scratch, cond);
     }
   }
 }
@@ -2405,15 +2440,19 @@ void Assembler::vsqrt(const DwVfpRegister dst,
 
 // Pseudo instructions.
 void Assembler::nop(int type) {
-  // This is mov rx, rx.
-  ASSERT(0 <= type && type <= 14);  // mov pc, pc is not a nop.
+  // ARMv6{K/T2} and v7 have an actual NOP instruction but it serializes
+  // some of the CPU's pipeline and has to issue. Older ARM chips simply used
+  // MOV Rx, Rx as NOP and it performs better even in newer CPUs.
+  // We therefore use MOV Rx, Rx, even on newer CPUs, and use Rx to encode
+  // a type.
+  ASSERT(0 <= type && type <= 14);  // mov pc, pc isn't a nop.
   emit(al | 13*B21 | type*B12 | type);
 }
 
 
 bool Assembler::IsNop(Instr instr, int type) {
+  ASSERT(0 <= type && type <= 14);  // mov pc, pc isn't a nop.
   // Check for mov rx, rx where x = type.
-  ASSERT(0 <= type && type <= 14);  // mov pc, pc is not a nop.
   return instr == (al | 13*B21 | type*B12 | type);
 }
 

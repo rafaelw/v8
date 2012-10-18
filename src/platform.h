@@ -71,6 +71,24 @@ int signbit(double x);
 
 int strncasecmp(const char* s1, const char* s2, int n);
 
+inline int lrint(double flt) {
+  int intgr;
+#if defined(V8_TARGET_ARCH_IA32)
+  __asm {
+    fld flt
+    fistp intgr
+  };
+#else
+  intgr = static_cast<int>(flt + 0.5);
+  if ((intgr & 1) != 0 && intgr - flt == 0.5) {
+    // If the number is halfway between two integers, round to the even one.
+    intgr--;
+  }
+#endif
+  return intgr;
+}
+
+
 #endif  // _MSC_VER
 
 // Random is missing on both Visual Studio and MinGW.
@@ -89,7 +107,11 @@ namespace internal {
 
 // Use AtomicWord for a machine-sized pointer. It is assumed that
 // reads and writes of naturally aligned values of this type are atomic.
+#if defined(__OpenBSD__) && defined(__i386__)
+typedef Atomic32 AtomicWord;
+#else
 typedef intptr_t AtomicWord;
+#endif
 
 class Semaphore;
 class Mutex;

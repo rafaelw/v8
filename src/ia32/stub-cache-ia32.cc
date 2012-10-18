@@ -276,12 +276,12 @@ void StubCompiler::GenerateDirectLoadGlobalFunctionPrototype(
     Register prototype,
     Label* miss) {
   // Check we're still in the same context.
-  __ cmp(Operand(esi, Context::SlotOffset(Context::GLOBAL_INDEX)),
-         masm->isolate()->global());
+  __ cmp(Operand(esi, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)),
+         masm->isolate()->global_object());
   __ j(not_equal, miss);
   // Get the global function with the given index.
   Handle<JSFunction> function(
-      JSFunction::cast(masm->isolate()->global_context()->get(index)));
+      JSFunction::cast(masm->isolate()->native_context()->get(index)));
   // Load its initial map. The global functions all have initial maps.
   __ Set(prototype, Immediate(Handle<Map>(function->initial_map())));
   // Load the prototype from the initial map.
@@ -1060,18 +1060,31 @@ void StubCompiler::GenerateDictionaryLoadCallback(Register receiver,
                                                   Handle<AccessorInfo> callback,
                                                   Handle<String> name,
                                                   Label* miss) {
+  ASSERT(!receiver.is(scratch2));
+  ASSERT(!receiver.is(scratch3));
   Register dictionary = scratch1;
+  bool must_preserve_dictionary_reg = receiver.is(dictionary);
+
+  // Load the properties dictionary.
+  if (must_preserve_dictionary_reg) {
+    __ push(dictionary);
+  }
   __ mov(dictionary, FieldOperand(receiver, JSObject::kPropertiesOffset));
 
   // Probe the dictionary.
-  Label probe_done;
+  Label probe_done, pop_and_miss;
   StringDictionaryLookupStub::GeneratePositiveLookup(masm(),
-                                                     miss,
+                                                     &pop_and_miss,
                                                      &probe_done,
                                                      dictionary,
                                                      name_reg,
                                                      scratch2,
                                                      scratch3);
+  __ bind(&pop_and_miss);
+  if (must_preserve_dictionary_reg) {
+    __ pop(dictionary);
+  }
+  __ jmp(miss);
   __ bind(&probe_done);
 
   // If probing finds an entry in the dictionary, scratch2 contains the
@@ -1083,6 +1096,9 @@ void StubCompiler::GenerateDictionaryLoadCallback(Register receiver,
   const int kValueOffset = kElementsStartOffset + kPointerSize;
   __ mov(scratch3,
          Operand(dictionary, index, times_4, kValueOffset - kHeapObjectTag));
+  if (must_preserve_dictionary_reg) {
+    __ pop(dictionary);
+  }
   __ cmp(scratch3, callback);
   __ j(not_equal, miss);
 }
@@ -1095,6 +1111,7 @@ void StubCompiler::GenerateLoadCallback(Handle<JSObject> object,
                                         Register scratch1,
                                         Register scratch2,
                                         Register scratch3,
+                                        Register scratch4,
                                         Handle<AccessorInfo> callback,
                                         Handle<String> name,
                                         Label* miss) {
@@ -1107,7 +1124,7 @@ void StubCompiler::GenerateLoadCallback(Handle<JSObject> object,
 
   if (!holder->HasFastProperties() && !holder->IsJSGlobalObject()) {
     GenerateDictionaryLoadCallback(
-        receiver, name_reg, scratch1, scratch2, scratch3, callback, name, miss);
+        reg, name_reg, scratch1, scratch2, scratch3, callback, name, miss);
   }
 
   // Insert additional parameters into the stack frame above return address.
@@ -2584,9 +2601,10 @@ Handle<Code> StoreStubCompiler::CompileStoreField(Handle<JSObject> object,
 
 
 Handle<Code> StoreStubCompiler::CompileStoreCallback(
-    Handle<JSObject> object,
-    Handle<AccessorInfo> callback,
-    Handle<String> name) {
+    Handle<String> name,
+    Handle<JSObject> receiver,
+    Handle<JSObject> holder,
+    Handle<AccessorInfo> callback) {
   // ----------- S t a t e -------------
   //  -- eax    : value
   //  -- ecx    : name
@@ -2594,19 +2612,14 @@ Handle<Code> StoreStubCompiler::CompileStoreCallback(
   //  -- esp[0] : return address
   // -----------------------------------
   Label miss;
+  // Check that the maps haven't changed, preserving the value register.
+  __ push(eax);
+  __ JumpIfSmi(edx, &miss);
+  CheckPrototypes(receiver, edx, holder, ebx, eax, edi, name, &miss);
+  __ pop(eax);  // restore value
 
-  // Check that the map of the object hasn't changed.
-  __ CheckMap(edx, Handle<Map>(object->map()),
-              &miss, DO_SMI_CHECK, ALLOW_ELEMENT_TRANSITION_MAPS);
-
-  // Perform global security token check if needed.
-  if (object->IsJSGlobalProxy()) {
-    __ CheckAccessGlobalProxy(edx, ebx, &miss);
-  }
-
-  // Stub never generated for non-global objects that require access
-  // checks.
-  ASSERT(object->IsJSGlobalProxy() || !object->IsAccessCheckNeeded());
+  // Stub never generated for non-global objects that require access checks.
+  ASSERT(holder->IsJSGlobalProxy() || !holder->IsAccessCheckNeeded());
 
   __ pop(ebx);  // remove the return address
   __ push(edx);  // receiver
@@ -2622,12 +2635,59 @@ Handle<Code> StoreStubCompiler::CompileStoreCallback(
 
   // Handle store cache miss.
   __ bind(&miss);
+  __ pop(eax);
   Handle<Code> ic = isolate()->builtins()->StoreIC_Miss();
   __ jmp(ic, RelocInfo::CODE_TARGET);
 
   // Return the generated code.
   return GetCode(Code::CALLBACKS, name);
 }
+
+
+#undef __
+#define __ ACCESS_MASM(masm)
+
+
+void StoreStubCompiler::GenerateStoreViaSetter(
+    MacroAssembler* masm,
+    Handle<JSFunction> setter) {
+  // ----------- S t a t e -------------
+  //  -- eax    : value
+  //  -- ecx    : name
+  //  -- edx    : receiver
+  //  -- esp[0] : return address
+  // -----------------------------------
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+
+    // Save value register, so we can restore it later.
+    __ push(eax);
+
+    if (!setter.is_null()) {
+      // Call the JavaScript setter with receiver and value on the stack.
+      __ push(edx);
+      __ push(eax);
+      ParameterCount actual(1);
+      __ InvokeFunction(setter, actual, CALL_FUNCTION, NullCallWrapper(),
+                        CALL_AS_METHOD);
+    } else {
+      // If we generate a global code snippet for deoptimization only, remember
+      // the place to continue after deoptimization.
+      masm->isolate()->heap()->SetSetterStubDeoptPCOffset(masm->pc_offset());
+    }
+
+    // We have to return the passed value, not the return value of the setter.
+    __ pop(eax);
+
+    // Restore context register.
+    __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+  }
+  __ ret(0);
+}
+
+
+#undef __
+#define __ ACCESS_MASM(masm())
 
 
 Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
@@ -2649,26 +2709,7 @@ Handle<Code> StoreStubCompiler::CompileStoreViaSetter(
   CheckPrototypes(receiver, edx, holder, ebx, ecx, edi, name, &miss);
   __ pop(ecx);
 
-  {
-    FrameScope scope(masm(), StackFrame::INTERNAL);
-
-    // Save value register, so we can restore it later.
-    __ push(eax);
-
-    // Call the JavaScript setter with the receiver and the value on the stack.
-    __ push(edx);
-    __ push(eax);
-    ParameterCount actual(1);
-    __ InvokeFunction(setter, actual, CALL_FUNCTION, NullCallWrapper(),
-                      CALL_AS_METHOD);
-
-    // We have to return the passed value, not the return value of the setter.
-    __ pop(eax);
-
-    // Restore context register.
-    __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  }
-  __ ret(0);
+  GenerateStoreViaSetter(masm(), setter);
 
   __ bind(&miss);
   __ pop(ecx);
@@ -2945,14 +2986,51 @@ Handle<Code> LoadStubCompiler::CompileLoadCallback(
   // -----------------------------------
   Label miss;
 
-  GenerateLoadCallback(object, holder, edx, ecx, ebx, eax, edi, callback,
-                       name, &miss);
+  GenerateLoadCallback(object, holder, edx, ecx, ebx, eax, edi, no_reg,
+                       callback, name, &miss);
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
   return GetCode(Code::CALLBACKS, name);
 }
+
+
+#undef __
+#define __ ACCESS_MASM(masm)
+
+
+void LoadStubCompiler::GenerateLoadViaGetter(MacroAssembler* masm,
+                                             Handle<JSFunction> getter) {
+  // ----------- S t a t e -------------
+  //  -- ecx    : name
+  //  -- edx    : receiver
+  //  -- esp[0] : return address
+  // -----------------------------------
+  {
+    FrameScope scope(masm, StackFrame::INTERNAL);
+
+    if (!getter.is_null()) {
+      // Call the JavaScript getter with the receiver on the stack.
+      __ push(edx);
+      ParameterCount actual(0);
+      __ InvokeFunction(getter, actual, CALL_FUNCTION, NullCallWrapper(),
+                        CALL_AS_METHOD);
+    } else {
+      // If we generate a global code snippet for deoptimization only, remember
+      // the place to continue after deoptimization.
+      masm->isolate()->heap()->SetGetterStubDeoptPCOffset(masm->pc_offset());
+    }
+
+    // Restore context register.
+    __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
+  }
+  __ ret(0);
+}
+
+
+#undef __
+#define __ ACCESS_MASM(masm())
 
 
 Handle<Code> LoadStubCompiler::CompileLoadViaGetter(
@@ -2971,19 +3049,7 @@ Handle<Code> LoadStubCompiler::CompileLoadViaGetter(
   __ JumpIfSmi(edx, &miss);
   CheckPrototypes(receiver, edx, holder, ebx, eax, edi, name, &miss);
 
-  {
-    FrameScope scope(masm(), StackFrame::INTERNAL);
-
-    // Call the JavaScript getter with the receiver on the stack.
-    __ push(edx);
-    ParameterCount actual(0);
-    __ InvokeFunction(getter, actual, CALL_FUNCTION, NullCallWrapper(),
-                      CALL_AS_METHOD);
-
-    // Restore context register.
-    __ mov(esi, Operand(ebp, StandardFrameConstants::kContextOffset));
-  }
-  __ ret(0);
+  GenerateLoadViaGetter(masm(), getter);
 
   __ bind(&miss);
   GenerateLoadMiss(masm(), Code::LOAD_IC);
@@ -3135,8 +3201,8 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadCallback(
   __ cmp(ecx, Immediate(name));
   __ j(not_equal, &miss);
 
-  GenerateLoadCallback(receiver, holder, edx, ecx, ebx, eax, edi, callback,
-                       name, &miss);
+  GenerateLoadCallback(receiver, holder, edx, ecx, ebx, eax, edi, no_reg,
+                       callback, name, &miss);
 
   __ bind(&miss);
   __ DecrementCounter(counters->keyed_load_callback(), 1);

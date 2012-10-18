@@ -76,10 +76,10 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
       ? Context::FUNCTION_MAP_INDEX
       : Context::STRICT_MODE_FUNCTION_MAP_INDEX;
 
-  // Compute the function map in the current global context and set that
+  // Compute the function map in the current native context and set that
   // as the map of the allocated object.
-  __ movq(rcx, Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ movq(rcx, FieldOperand(rcx, GlobalObject::kGlobalContextOffset));
+  __ movq(rcx, Operand(rsi, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ movq(rcx, FieldOperand(rcx, GlobalObject::kNativeContextOffset));
   __ movq(rbx, Operand(rcx, Context::SlotOffset(map_index)));
   __ movq(FieldOperand(rax, JSObject::kMapOffset), rbx);
 
@@ -120,8 +120,8 @@ void FastNewClosureStub::Generate(MacroAssembler* masm) {
 
   __ IncrementCounter(counters->fast_new_closure_try_optimized(), 1);
 
-  // rcx holds global context, ebx points to fixed array of 3-element entries
-  // (global context, optimized code, literals).
+  // rcx holds native context, ebx points to fixed array of 3-element entries
+  // (native context, optimized code, literals).
   // The optimized code map must never be empty, so check the first elements.
   Label install_optimized;
   // Speculatively move code object into edx.
@@ -217,8 +217,8 @@ void FastNewContextStub::Generate(MacroAssembler* masm) {
   __ movq(Operand(rax, Context::SlotOffset(Context::EXTENSION_INDEX)), rbx);
 
   // Copy the global object from the previous context.
-  __ movq(rbx, Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ movq(Operand(rax, Context::SlotOffset(Context::GLOBAL_INDEX)), rbx);
+  __ movq(rbx, Operand(rsi, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ movq(Operand(rax, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)), rbx);
 
   // Initialize the rest of the slots to undefined.
   __ LoadRoot(rbx, Heap::kUndefinedValueRootIndex);
@@ -259,9 +259,9 @@ void FastNewBlockContextStub::Generate(MacroAssembler* masm) {
   __ movq(FieldOperand(rax, HeapObject::kMapOffset), kScratchRegister);
   __ Move(FieldOperand(rax, FixedArray::kLengthOffset), Smi::FromInt(length));
 
-  // If this block context is nested in the global context we get a smi
+  // If this block context is nested in the native context we get a smi
   // sentinel instead of a function. The block context should get the
-  // canonical empty function of the global context as its closure which
+  // canonical empty function of the native context as its closure which
   // we still have to look up.
   Label after_sentinel;
   __ JumpIfNotSmi(rcx, &after_sentinel, Label::kNear);
@@ -271,7 +271,7 @@ void FastNewBlockContextStub::Generate(MacroAssembler* masm) {
     __ Assert(equal, message);
   }
   __ movq(rcx, GlobalObjectOperand());
-  __ movq(rcx, FieldOperand(rcx, GlobalObject::kGlobalContextOffset));
+  __ movq(rcx, FieldOperand(rcx, GlobalObject::kNativeContextOffset));
   __ movq(rcx, ContextOperand(rcx, Context::CLOSURE_INDEX));
   __ bind(&after_sentinel);
 
@@ -281,8 +281,8 @@ void FastNewBlockContextStub::Generate(MacroAssembler* masm) {
   __ movq(ContextOperand(rax, Context::EXTENSION_INDEX), rbx);
 
   // Copy the global object from the previous context.
-  __ movq(rbx, ContextOperand(rsi, Context::GLOBAL_INDEX));
-  __ movq(ContextOperand(rax, Context::GLOBAL_INDEX), rbx);
+  __ movq(rbx, ContextOperand(rsi, Context::GLOBAL_OBJECT_INDEX));
+  __ movq(ContextOperand(rax, Context::GLOBAL_OBJECT_INDEX), rbx);
 
   // Initialize the rest of the slots to the hole value.
   __ LoadRoot(rbx, Heap::kTheHoleValueRootIndex);
@@ -1297,11 +1297,9 @@ void BinaryOpStub::GenerateFloatingPointCode(MacroAssembler* masm,
                               &allocation_failed,
                               TAG_OBJECT);
         // Set the map.
-        if (FLAG_debug_code) {
-          __ AbortIfNotRootValue(heap_number_map,
-                                 Heap::kHeapNumberMapRootIndex,
-                                 "HeapNumberMap register clobbered.");
-        }
+        __ AssertRootValue(heap_number_map,
+                           Heap::kHeapNumberMapRootIndex,
+                           "HeapNumberMap register clobbered.");
         __ movq(FieldOperand(rax, HeapObject::kMapOffset),
                 heap_number_map);
         __ cvtqsi2sd(xmm0, rbx);
@@ -2049,10 +2047,7 @@ void FloatingPointHelper::NumbersToSmis(MacroAssembler* masm,
 
   __ JumpIfSmi(second, (on_success != NULL) ? on_success : &done);
   __ bind(&first_smi);
-  if (FLAG_debug_code) {
-    // Second should be non-smi if we get here.
-    __ AbortIfSmi(second);
-  }
+  __ AssertNotSmi(second);
   __ cmpq(FieldOperand(second, HeapObject::kMapOffset), heap_number_map);
   __ j(not_equal, on_not_smis);
   // Convert second to smi, if possible.
@@ -2262,21 +2257,28 @@ void MathPowStub::Generate(MacroAssembler* masm) {
   __ movsd(double_scratch2, double_result);  // Load double_exponent with 1.
 
   // Get absolute value of exponent.
-  Label no_neg, while_true, no_multiply;
+  Label no_neg, while_true, while_false;
   __ testl(scratch, scratch);
   __ j(positive, &no_neg, Label::kNear);
   __ negl(scratch);
   __ bind(&no_neg);
 
+  __ j(zero, &while_false, Label::kNear);
+  __ shrl(scratch, Immediate(1));
+  // Above condition means CF==0 && ZF==0.  This means that the
+  // bit that has been shifted out is 0 and the result is not 0.
+  __ j(above, &while_true, Label::kNear);
+  __ movsd(double_result, double_scratch);
+  __ j(zero, &while_false, Label::kNear);
+
   __ bind(&while_true);
   __ shrl(scratch, Immediate(1));
-  __ j(not_carry, &no_multiply, Label::kNear);
-  __ mulsd(double_result, double_scratch);
-  __ bind(&no_multiply);
-
   __ mulsd(double_scratch, double_scratch);
+  __ j(above, &while_true, Label::kNear);
+  __ mulsd(double_result, double_scratch);
   __ j(not_zero, &while_true);
 
+  __ bind(&while_false);
   // If the exponent is negative, return 1/result.
   __ testl(exponent, exponent);
   __ j(greater, &done);
@@ -2456,10 +2458,10 @@ void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
 
   // rax = address of new object(s) (tagged)
   // rcx = argument count (untagged)
-  // Get the arguments boilerplate from the current (global) context into rdi.
+  // Get the arguments boilerplate from the current native context into rdi.
   Label has_mapped_parameters, copy;
-  __ movq(rdi, Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ movq(rdi, FieldOperand(rdi, GlobalObject::kGlobalContextOffset));
+  __ movq(rdi, Operand(rsi, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ movq(rdi, FieldOperand(rdi, GlobalObject::kNativeContextOffset));
   __ testq(rbx, rbx);
   __ j(not_zero, &has_mapped_parameters, Label::kNear);
 
@@ -2672,9 +2674,9 @@ void ArgumentsAccessStub::GenerateNewStrict(MacroAssembler* masm) {
   // Do the allocation of both objects in one go.
   __ AllocateInNewSpace(rcx, rax, rdx, rbx, &runtime, TAG_OBJECT);
 
-  // Get the arguments boilerplate from the current (global) context.
-  __ movq(rdi, Operand(rsi, Context::SlotOffset(Context::GLOBAL_INDEX)));
-  __ movq(rdi, FieldOperand(rdi, GlobalObject::kGlobalContextOffset));
+  // Get the arguments boilerplate from the current native context.
+  __ movq(rdi, Operand(rsi, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
+  __ movq(rdi, FieldOperand(rdi, GlobalObject::kNativeContextOffset));
   const int offset =
       Context::SlotOffset(Context::STRICT_MODE_ARGUMENTS_BOILERPLATE_INDEX);
   __ movq(rdi, Operand(rdi, offset));
@@ -3203,8 +3205,8 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   // r8: Number of array elements as smi.
 
   // Set JSArray map to global.regexp_result_map().
-  __ movq(rdx, ContextOperand(rsi, Context::GLOBAL_INDEX));
-  __ movq(rdx, FieldOperand(rdx, GlobalObject::kGlobalContextOffset));
+  __ movq(rdx, ContextOperand(rsi, Context::GLOBAL_OBJECT_INDEX));
+  __ movq(rdx, FieldOperand(rdx, GlobalObject::kNativeContextOffset));
   __ movq(rdx, ContextOperand(rdx, Context::REGEXP_RESULT_MAP_INDEX));
   __ movq(FieldOperand(rax, HeapObject::kMapOffset), rdx);
 
@@ -3235,14 +3237,14 @@ void RegExpConstructResultStub::Generate(MacroAssembler* masm) {
   // Set length.
   __ Integer32ToSmi(rdx, rbx);
   __ movq(FieldOperand(rcx, FixedArray::kLengthOffset), rdx);
-  // Fill contents of fixed-array with the-hole.
-  __ LoadRoot(rdx, Heap::kTheHoleValueRootIndex);
+  // Fill contents of fixed-array with undefined.
+  __ LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
   __ lea(rcx, FieldOperand(rcx, FixedArray::kHeaderSize));
-  // Fill fixed array elements with hole.
+  // Fill fixed array elements with undefined.
   // rax: JSArray.
   // rbx: Number of elements in array that remains to be filled, as int32.
   // rcx: Start of elements in FixedArray.
-  // rdx: the hole.
+  // rdx: undefined.
   Label loop;
   __ testl(rbx, rbx);
   __ bind(&loop);
@@ -5922,8 +5924,7 @@ void StringDictionaryLookupStub::GeneratePositiveLookup(MacroAssembler* masm,
   ASSERT(!name.is(r0));
   ASSERT(!name.is(r1));
 
-  // Assert that name contains a string.
-  if (FLAG_debug_code) __ AbortIfNotString(name);
+  __ AssertString(name);
 
   __ SmiToInteger32(r0, FieldOperand(elements, kCapacityOffset));
   __ decl(r0);
@@ -6137,6 +6138,11 @@ void RecordWriteStub::GenerateFixedRegStubsAheadOfTime() {
 }
 
 
+bool CodeStub::CanUseFPRegisters() {
+  return true;  // Always have SSE2 on x64.
+}
+
+
 // Takes the input in 3 registers: address_ value_ and object_.  A pointer to
 // the value has just been written into the object, now this stub makes sure
 // we keep the GC informed.  The word in the object where the value has been
@@ -6268,6 +6274,17 @@ void RecordWriteStub::CheckNeedsToInformIncrementalMarker(
   Label on_black;
   Label need_incremental;
   Label need_incremental_pop_object;
+
+  __ movq(regs_.scratch0(), Immediate(~Page::kPageAlignmentMask));
+  __ and_(regs_.scratch0(), regs_.object());
+  __ movq(regs_.scratch1(),
+         Operand(regs_.scratch0(),
+                 MemoryChunk::kWriteBarrierCounterOffset));
+  __ subq(regs_.scratch1(), Immediate(1));
+  __ movq(Operand(regs_.scratch0(),
+                 MemoryChunk::kWriteBarrierCounterOffset),
+         regs_.scratch1());
+  __ j(negative, &need_incremental);
 
   // Let's look at the color of the object:  If it is not black we don't have
   // to inform the incremental marker.

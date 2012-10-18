@@ -504,6 +504,7 @@ Handle<Code> StubCache::ComputeStoreGlobal(Handle<String> name,
 
 Handle<Code> StubCache::ComputeStoreCallback(Handle<String> name,
                                              Handle<JSObject> receiver,
+                                             Handle<JSObject> holder,
                                              Handle<AccessorInfo> callback,
                                              StrictModeFlag strict_mode) {
   ASSERT(v8::ToCData<Address>(callback->setter()) != 0);
@@ -513,7 +514,8 @@ Handle<Code> StubCache::ComputeStoreCallback(Handle<String> name,
   if (probe->IsCode()) return Handle<Code>::cast(probe);
 
   StoreStubCompiler compiler(isolate_, strict_mode);
-  Handle<Code> code = compiler.CompileStoreCallback(receiver, callback, name);
+  Handle<Code> code =
+      compiler.CompileStoreCallback(name, receiver, holder, callback);
   PROFILE(isolate_, CodeCreateEvent(Logger::STORE_IC_TAG, *code, *name));
   GDBJIT(AddCode(GDBJITInterface::STORE_IC, *name, *code));
   JSObject::UpdateMapCodeCache(receiver, name, code);
@@ -936,7 +938,7 @@ void StubCache::Clear() {
 void StubCache::CollectMatchingMaps(SmallMapList* types,
                                     String* name,
                                     Code::Flags flags,
-                                    Handle<Context> global_context,
+                                    Handle<Context> native_context,
                                     Zone* zone) {
   for (int i = 0; i < kPrimaryTableSize; i++) {
     if (primary_[i].key == name) {
@@ -947,7 +949,7 @@ void StubCache::CollectMatchingMaps(SmallMapList* types,
 
       int offset = PrimaryOffset(name, flags, map);
       if (entry(primary_, offset) == &primary_[i] &&
-          !TypeFeedbackOracle::CanRetainOtherContext(map, *global_context)) {
+          !TypeFeedbackOracle::CanRetainOtherContext(map, *native_context)) {
         types->Add(Handle<Map>(map), zone);
       }
     }
@@ -971,7 +973,7 @@ void StubCache::CollectMatchingMaps(SmallMapList* types,
       // Lookup in secondary table and add matches.
       int offset = SecondaryOffset(name, flags, primary_offset);
       if (entry(secondary_, offset) == &secondary_[i] &&
-          !TypeFeedbackOracle::CanRetainOtherContext(map, *global_context)) {
+          !TypeFeedbackOracle::CanRetainOtherContext(map, *native_context)) {
         types->Add(Handle<Map>(map), zone);
       }
     }
@@ -1003,7 +1005,9 @@ RUNTIME_FUNCTION(MaybeObject*, LoadCallbackProperty) {
   }
   RETURN_IF_SCHEDULED_EXCEPTION(isolate);
   if (result.IsEmpty()) return HEAP->undefined_value();
-  return *v8::Utils::OpenHandle(*result);
+  Handle<Object> result_internal = v8::Utils::OpenHandle(*result);
+  result_internal->VerifyApiCallResultType();
+  return *result_internal;
 }
 
 
@@ -1068,6 +1072,8 @@ RUNTIME_FUNCTION(MaybeObject*, LoadPropertyWithInterceptorOnly) {
     }
     RETURN_IF_SCHEDULED_EXCEPTION(isolate);
     if (!r.IsEmpty()) {
+      Handle<Object> result = v8::Utils::OpenHandle(*r);
+      result->VerifyApiCallResultType();
       return *v8::Utils::OpenHandle(*r);
     }
   }
@@ -1124,7 +1130,9 @@ static MaybeObject* LoadWithInterceptor(Arguments* args,
     RETURN_IF_SCHEDULED_EXCEPTION(isolate);
     if (!r.IsEmpty()) {
       *attrs = NONE;
-      return *v8::Utils::OpenHandle(*r);
+      Handle<Object> result = v8::Utils::OpenHandle(*r);
+      result->VerifyApiCallResultType();
+      return *result;
     }
   }
 

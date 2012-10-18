@@ -1018,6 +1018,11 @@ class Boolean : public Primitive {
  */
 class String : public Primitive {
  public:
+  enum Encoding {
+    UNKNOWN_ENCODING = 0x1,
+    TWO_BYTE_ENCODING = 0x0,
+    ASCII_ENCODING = 0x4
+  };
   /**
    * Returns the number of characters in this string.
    */
@@ -1179,6 +1184,14 @@ class String : public Primitive {
    protected:
     ExternalAsciiStringResource() {}
   };
+
+  /**
+   * If the string is an external string, return the ExternalStringResourceBase
+   * regardless of the encoding, otherwise return NULL.  The encoding of the
+   * string is returned in encoding_out.
+   */
+  inline ExternalStringResourceBase* GetExternalStringResourceBase(
+      Encoding* encoding_out) const;
 
   /**
    * Get the ExternalStringResource for an external string.  Returns
@@ -1343,6 +1356,8 @@ class String : public Primitive {
   };
 
  private:
+  V8EXPORT void VerifyExternalStringResourceBase(ExternalStringResourceBase* v,
+                                                 Encoding encoding) const;
   V8EXPORT void VerifyExternalStringResource(ExternalStringResource* val) const;
   V8EXPORT static void CheckCast(v8::Value* obj);
 };
@@ -2945,6 +2960,57 @@ typedef void (*FunctionEntryHook)(uintptr_t function,
 
 
 /**
+ * A JIT code event is issued each time code is added, moved or removed.
+ *
+ * \note removal events are not currently issued.
+ */
+struct JitCodeEvent {
+  enum EventType {
+    CODE_ADDED,
+    CODE_MOVED,
+    CODE_REMOVED
+  };
+
+  // Type of event.
+  EventType type;
+  // Start of the instructions.
+  void* code_start;
+  // Size of the instructions.
+  size_t code_len;
+
+  union {
+    // Only valid for CODE_ADDED.
+    struct {
+      // Name of the object associated with the code, note that the string is
+      // not zero-terminated.
+      const char* str;
+      // Number of chars in str.
+      size_t len;
+    } name;
+    // New location of instructions. Only valid for CODE_MOVED.
+    void* new_code_start;
+  };
+};
+
+/**
+ * Option flags passed to the SetJitCodeEventHandler function.
+ */
+enum JitCodeEventOptions {
+  kJitCodeEventDefault = 0,
+  // Generate callbacks for already existent code.
+  kJitCodeEventEnumExisting = 1
+};
+
+
+/**
+ * Callback function passed to SetJitCodeEventHandler.
+ *
+ * \param event code add, move or removal event.
+ */
+typedef void (*JitCodeEventHandler)(const JitCodeEvent* event);
+
+
+/**
  * Interface for iterating though all external resources in the heap.
  */
 class V8EXPORT ExternalResourceVisitor {  // NOLINT
@@ -3217,6 +3283,29 @@ class V8EXPORT V8 {
    *   fail.
    */
   static bool SetFunctionEntryHook(FunctionEntryHook entry_hook);
+
+  /**
+   * Allows the host application to provide the address of a function that is
+   * notified each time code is added, moved or removed.
+   *
+   * \param options options for the JIT code event handler.
+   * \param event_handler the JIT code event handler, which will be invoked
+   *     each time code is added, moved or removed.
+   * \note \p event_handler won't get notified of existent code.
+   * \note since code removal notifications are not currently issued, the
+   *     \p event_handler may get notifications of code that overlaps earlier
+   *     code notifications. This happens when code areas are reused, and the
+   *     earlier overlapping code areas should therefore be discarded.
+   * \note the events passed to \p event_handler and the strings they point to
+   *     are not guaranteed to live past each call. The \p event_handler must
+   *     copy strings and other parameters it needs to keep around.
+   * \note the set of events declared in JitCodeEvent::EventType is expected to
+   *     grow over time, and the JitCodeEvent structure is expected to accrue
+   *     new members. The \p event_handler function must ignore event codes
+   *     it does not recognize to maintain future compatibility.
+   */
+  static void SetJitCodeEventHandler(JitCodeEventOptions options,
+                                     JitCodeEventHandler event_handler);
 
   /**
    * Adjusts the amount of registered external memory.  Used to give
@@ -3631,7 +3720,7 @@ class V8EXPORT Context {
    * with the debugger to provide additional information on the context through
    * the debugger API.
    */
-  void SetData(Handle<String> data);
+  void SetData(Handle<Value> data);
   Local<Value> GetData();
 
   /**
@@ -3654,6 +3743,13 @@ class V8EXPORT Context {
    * For more details see AllowCodeGenerationFromStrings(bool) documentation.
    */
   bool IsCodeGenerationFromStringsAllowed();
+
+  /**
+   * Sets the error description for the exception that is thrown when
+   * code generation from strings is not allowed and 'eval' or the 'Function'
+   * constructor are called.
+   */
+  void SetErrorMessageForCodeGenerationFromStrings(Handle<String> message);
 
   /**
    * Stack-allocated class which sets the execution context for all
@@ -3961,7 +4057,9 @@ class Internals {
   static const int kForeignAddressOffset = kApiPointerSize;
   static const int kJSObjectHeaderSize = 3 * kApiPointerSize;
   static const int kFullStringRepresentationMask = 0x07;
+  static const int kStringEncodingMask = 0x4;
   static const int kExternalTwoByteRepresentationTag = 0x02;
+  static const int kExternalAsciiRepresentationTag = 0x06;
 
   static const int kIsolateStateOffset = 0;
   static const int kIsolateEmbedderDataOffset = 1 * kApiPointerSize;
@@ -3970,7 +4068,7 @@ class Internals {
   static const int kNullValueRootIndex = 7;
   static const int kTrueValueRootIndex = 8;
   static const int kFalseValueRootIndex = 9;
-  static const int kEmptySymbolRootIndex = 112;
+  static const int kEmptySymbolRootIndex = 117;
 
   static const int kJSObjectType = 0xaa;
   static const int kFirstNonstringType = 0x80;
@@ -4313,6 +4411,26 @@ String::ExternalStringResource* String::GetExternalStringResource() const {
   VerifyExternalStringResource(result);
 #endif
   return result;
+}
+
+
+String::ExternalStringResourceBase* String::GetExternalStringResourceBase(
+    String::Encoding* encoding_out) const {
+  typedef internal::Object O;
+  typedef internal::Internals I;
+  O* obj = *reinterpret_cast<O**>(const_cast<String*>(this));
+  int type = I::GetInstanceType(obj) & I::kFullStringRepresentationMask;
+  *encoding_out = static_cast<Encoding>(type & I::kStringEncodingMask);
+  ExternalStringResourceBase* resource = NULL;
+  if (type == I::kExternalAsciiRepresentationTag ||
+      type == I::kExternalTwoByteRepresentationTag) {
+    void* value = I::ReadField<void*>(obj, I::kStringResourceOffset);
+    resource = static_cast<ExternalStringResourceBase*>(value);
+  }
+#ifdef V8_ENABLE_CHECKS
+    VerifyExternalStringResourceBase(resource, *encoding_out);
+#endif
+  return resource;
 }
 
 

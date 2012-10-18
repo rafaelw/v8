@@ -42,15 +42,11 @@ namespace internal {
 
 
 template <class C>
-static C* FindInPrototypeChain(Object* obj, bool* found_it) {
-  ASSERT(!*found_it);
-  Heap* heap = HEAP;
-  while (!Is<C>(obj)) {
-    if (obj == heap->null_value()) return NULL;
-    obj = obj->GetPrototype();
+static C* FindInstanceOf(Object* obj) {
+  for (Object* cur = obj; !cur->IsNull(); cur = cur->GetPrototype()) {
+    if (Is<C>(cur)) return C::cast(cur);
   }
-  *found_it = true;
-  return C::cast(obj);
+  return NULL;
 }
 
 
@@ -81,10 +77,8 @@ MaybeObject* Accessors::ReadOnlySetAccessor(JSObject*, Object* value, void*) {
 
 MaybeObject* Accessors::ArrayGetLength(Object* object, void*) {
   // Traverse the prototype chain until we reach an array.
-  bool found_it = false;
-  JSArray* holder = FindInPrototypeChain<JSArray>(object, &found_it);
-  if (!found_it) return Smi::FromInt(0);
-  return holder->length();
+  JSArray* holder = FindInstanceOf<JSArray>(object);
+  return holder == NULL ? Smi::FromInt(0) : holder->length();
 }
 
 
@@ -92,9 +86,9 @@ MaybeObject* Accessors::ArrayGetLength(Object* object, void*) {
 Object* Accessors::FlattenNumber(Object* value) {
   if (value->IsNumber() || !value->IsJSValue()) return value;
   JSValue* wrapper = JSValue::cast(value);
-  ASSERT(Isolate::Current()->context()->global_context()->number_function()->
+  ASSERT(Isolate::Current()->context()->native_context()->number_function()->
       has_initial_map());
-  Map* number_map = Isolate::Current()->context()->global_context()->
+  Map* number_map = Isolate::Current()->context()->native_context()->
       number_function()->initial_map();
   if (wrapper->map() == number_map) return wrapper->value();
   return value;
@@ -448,15 +442,12 @@ const AccessorDescriptor Accessors::ScriptEvalFromFunctionName = {
 
 MaybeObject* Accessors::FunctionGetPrototype(Object* object, void*) {
   Heap* heap = Isolate::Current()->heap();
-  bool found_it = false;
-  JSFunction* function = FindInPrototypeChain<JSFunction>(object, &found_it);
-  if (!found_it) return heap->undefined_value();
+  JSFunction* function = FindInstanceOf<JSFunction>(object);
+  if (function == NULL) return heap->undefined_value();
   while (!function->should_have_prototype()) {
-    found_it = false;
-    function = FindInPrototypeChain<JSFunction>(object->GetPrototype(),
-                                                &found_it);
+    function = FindInstanceOf<JSFunction>(function->GetPrototype());
     // There has to be one because we hit the getter.
-    ASSERT(found_it);
+    ASSERT(function != NULL);
   }
 
   if (!function->has_prototype()) {
@@ -477,9 +468,8 @@ MaybeObject* Accessors::FunctionSetPrototype(JSObject* object,
                                              Object* value,
                                              void*) {
   Heap* heap = object->GetHeap();
-  bool found_it = false;
-  JSFunction* function = FindInPrototypeChain<JSFunction>(object, &found_it);
-  if (!found_it) return heap->undefined_value();
+  JSFunction* function = FindInstanceOf<JSFunction>(object);
+  if (function == NULL) return heap->undefined_value();
   if (!function->should_have_prototype()) {
     // Since we hit this accessor, object will have no prototype property.
     return object->SetLocalPropertyIgnoreAttributes(heap->prototype_symbol(),
@@ -509,22 +499,20 @@ const AccessorDescriptor Accessors::FunctionPrototype = {
 
 
 MaybeObject* Accessors::FunctionGetLength(Object* object, void*) {
-  bool found_it = false;
-  JSFunction* function = FindInPrototypeChain<JSFunction>(object, &found_it);
-  if (!found_it) return Smi::FromInt(0);
+  JSFunction* function = FindInstanceOf<JSFunction>(object);
+  if (function == NULL) return Smi::FromInt(0);
   // Check if already compiled.
-  if (!function->shared()->is_compiled()) {
-    // If the function isn't compiled yet, the length is not computed
-    // correctly yet. Compile it now and return the right length.
-    HandleScope scope;
-    Handle<JSFunction> handle(function);
-    if (!JSFunction::CompileLazy(handle, KEEP_EXCEPTION)) {
-      return Failure::Exception();
-    }
-    return Smi::FromInt(handle->shared()->length());
-  } else {
+  if (function->shared()->is_compiled()) {
     return Smi::FromInt(function->shared()->length());
   }
+  // If the function isn't compiled yet, the length is not computed correctly
+  // yet. Compile it now and return the right length.
+  HandleScope scope;
+  Handle<JSFunction> handle(function);
+  if (JSFunction::CompileLazy(handle, KEEP_EXCEPTION)) {
+    return Smi::FromInt(handle->shared()->length());
+  }
+  return Failure::Exception();
 }
 
 
@@ -541,10 +529,8 @@ const AccessorDescriptor Accessors::FunctionLength = {
 
 
 MaybeObject* Accessors::FunctionGetName(Object* object, void*) {
-  bool found_it = false;
-  JSFunction* holder = FindInPrototypeChain<JSFunction>(object, &found_it);
-  if (!found_it) return HEAP->undefined_value();
-  return holder->shared()->name();
+  JSFunction* holder = FindInstanceOf<JSFunction>(object);
+  return holder == NULL ? HEAP->undefined_value() : holder->shared()->name();
 }
 
 
@@ -589,9 +575,8 @@ static MaybeObject* ConstructArgumentsObjectForInlinedFunction(
 MaybeObject* Accessors::FunctionGetArguments(Object* object, void*) {
   Isolate* isolate = Isolate::Current();
   HandleScope scope(isolate);
-  bool found_it = false;
-  JSFunction* holder = FindInPrototypeChain<JSFunction>(object, &found_it);
-  if (!found_it) return isolate->heap()->undefined_value();
+  JSFunction* holder = FindInstanceOf<JSFunction>(object);
+  if (holder == NULL) return isolate->heap()->undefined_value();
   Handle<JSFunction> function(holder, isolate);
 
   if (function->shared()->native()) return isolate->heap()->null_value();
@@ -727,9 +712,8 @@ MaybeObject* Accessors::FunctionGetCaller(Object* object, void*) {
   Isolate* isolate = Isolate::Current();
   HandleScope scope(isolate);
   AssertNoAllocation no_alloc;
-  bool found_it = false;
-  JSFunction* holder = FindInPrototypeChain<JSFunction>(object, &found_it);
-  if (!found_it) return isolate->heap()->undefined_value();
+  JSFunction* holder = FindInstanceOf<JSFunction>(object);
+  if (holder == NULL) return isolate->heap()->undefined_value();
   if (holder->shared()->native()) return isolate->heap()->null_value();
   Handle<JSFunction> function(holder, isolate);
 
@@ -754,6 +738,9 @@ MaybeObject* Accessors::FunctionGetCaller(Object* object, void*) {
   while (potential_caller != NULL && potential_caller->IsBuiltin()) {
     caller = potential_caller;
     potential_caller = it.next();
+  }
+  if (!caller->shared()->native() && potential_caller != NULL) {
+    caller = potential_caller;
   }
   // If caller is bound, return null. This is compatible with JSC, and
   // allows us to make bound functions use the strict function map
