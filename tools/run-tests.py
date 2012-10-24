@@ -60,6 +60,18 @@ MODE_FLAGS = {
                  "--enable-slow-asserts", "--debug-code", "--verify-heap"],
     "release" : ["--nobreak-on-abort", "--nodead-code-elimination"]}
 
+SUPPORTED_ARCHS = ["android_arm",
+                   "android_ia32",
+                   "arm",
+                   "ia32",
+                   "mipsel",
+                   "x64"]
+# Double the timeout for these:
+SLOW_ARCHS = ["android_arm",
+              "android_ia32",
+              "arm",
+              "mipsel"]
+
 
 def BuildOptions():
   result = optparse.OptionParser()
@@ -150,7 +162,7 @@ def ProcessOptions(options):
     options.arch = ARCH_GUESS
   options.arch = options.arch.split(",")
   for arch in options.arch:
-    if not arch in ['ia32', 'x64', 'arm', 'mipsel']:
+    if not arch in SUPPORTED_ARCHS:
       print "Unknown architecture %s" % arch
       return False
 
@@ -174,12 +186,6 @@ def ProcessOptions(options):
       options.shell_dir = os.path.dirname(options.shell)
   if options.stress_only:
     VARIANT_FLAGS = [["--stress-opt", "--always-opt"]]
-  # Simulators are slow, therefore allow a longer default timeout.
-  if options.timeout == -1:
-    if options.arch == "arm" or options.arch == "mipsel":
-      options.timeout = 2 * TIMEOUT_DEFAULT;
-    else:
-      options.timeout = TIMEOUT_DEFAULT;
   if options.valgrind:
     run_valgrind = os.path.join("tools", "run-valgrind.py")
     # This is OK for distributed running, so we don't need to set no_network.
@@ -264,10 +270,18 @@ def Execute(arch, mode, args, options, suites, workspace):
 
   # Populate context object.
   mode_flags = MODE_FLAGS[mode]
-  options.timeout *= TIMEOUT_SCALEFACTOR[mode]
+  timeout = options.timeout
+  if timeout == -1:
+    # Simulators are slow, therefore allow a longer default timeout.
+    if arch in SLOW_ARCHS:
+      timeout = 2 * TIMEOUT_DEFAULT;
+    else:
+      timeout = TIMEOUT_DEFAULT;
+
+  timeout *= TIMEOUT_SCALEFACTOR[mode]
   ctx = context.Context(arch, mode, shell_dir,
                         mode_flags, options.verbose,
-                        options.timeout, options.isolates,
+                        timeout, options.isolates,
                         options.command_prefix,
                         options.extra_flags)
 
@@ -284,9 +298,9 @@ def Execute(arch, mode, args, options, suites, workspace):
   for s in suites:
     s.ReadStatusFile(variables)
     s.ReadTestCases(ctx)
-    all_tests += s.tests
     if len(args) > 0:
       s.FilterTestCasesByArgs(args)
+    all_tests += s.tests
     s.FilterTestCasesByStatus(options.warn_unused)
     if options.cat:
       verbose.PrintTestSource(s.tests)
