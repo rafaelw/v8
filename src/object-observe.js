@@ -47,6 +47,8 @@ var objectObservationState = %GetObjectObservationState();
 if (IS_UNDEFINED(objectObservationState.observerInfoMap)) {
   objectObservationState.observerInfoMap = createInternalWeakMap();
   objectObservationState.objectInfoMap = createInternalWeakMap();
+  objectObservationState.activeObservers = new InternalArray;
+  objectObservationState.observerPriority = 0;
 }
 var observerInfoMap = objectObservationState.observerInfoMap;
 var objectInfoMap = objectObservationState.objectInfoMap;
@@ -60,9 +62,9 @@ function ObjectObserve(object, callback) {
     throw MakeTypeError("observe_callback_frozen");
 
   if (!observerInfoMap.has(callback)) {
-    // TODO: setup observerInfo.priority.
     observerInfoMap.set(callback, {
-      pendingChangeRecords: null
+      pendingChangeRecords: null,
+      priority: objectObservationState.observerPriority++,
     });
   }
 
@@ -103,11 +105,11 @@ function EnqueueChangeRecord(changeRecord, observers) {
   for (var i = 0; i < observers.length; i++) {
     var observer = observers[i];
     var observerInfo = observerInfoMap.get(observer);
-
-    // TODO: "activate" the observer
-
-    if (IS_NULL(observerInfo.pendingChangeRecords)) {
-      observerInfo.pendingChangeRecords = new InternalArray(changeRecord);
+    objectObservationState.activeObservers[observerInfo.priority] = observer;
+    %SetHasActiveObjectObservers();
+    var pendingChangeRecords = observerInfo.pendingChangeRecords;
+    if (IS_NULL(pendingChangeRecords)) {
+      pendingChangeRecords = observerInfo.pendingChangeRecords = new InternalArray(changeRecord);
     } else {
       observerInfo.pendingChangeRecords.push(changeRecord);
     }
@@ -136,11 +138,8 @@ function ObjectNotify(object, changeRecord) {
   EnqueueChangeRecord(newRecord, objectInfo.changeObservers);
 }
 
-function ObjectDeliverChangeRecords(callback) {
-  if (!IS_SPEC_FUNCTION(callback))
-    throw MakeTypeError("observe_non_function", ["deliverChangeRecords"]);
-
-  var observerInfo = observerInfoMap.get(callback);
+function DeliverChangeRecordsForObserver(observer) {
+  var observerInfo = observerInfoMap.get(observer);
   if (IS_UNDEFINED(observerInfo))
     return;
 
@@ -152,8 +151,25 @@ function ObjectDeliverChangeRecords(callback) {
   var delivered = [];
   %MoveArrayContents(pendingChangeRecords, delivered);
   try {
-    %Call(void 0, delivered, callback);
+    %Call(void 0, delivered, observer);
   } catch (ex) {}
+}
+
+function ObjectDeliverChangeRecords(callback) {
+  if (!IS_SPEC_FUNCTION(callback))
+    throw MakeTypeError("observe_non_function", ["deliverChangeRecords"]);
+
+  DeliverChangeRecordsForObserver(callback);
+}
+
+function DeliverChangeRecords() {
+  while (objectObservationState.activeObservers.length) {
+    var activeObservers = objectObservationState.activeObservers;
+    objectObservationState.activeObservers = new InternalArray;
+    for (var i in activeObservers) {
+      DeliverChangeRecordsForObserver(activeObservers[i]);
+    }
+  }
 }
 
 function SetupObjectObserve() {

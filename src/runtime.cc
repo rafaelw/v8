@@ -13228,6 +13228,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetObjectObservationState) {
   return isolate->heap()->object_observation_state();
 }
 
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_SetHasActiveObjectObservers) {
+  ASSERT(args.length() == 0);
+  isolate->set_has_active_object_observers(true);
+  return isolate->heap()->undefined_value();
+}
+
+
 // ----------------------------------------------------------------------------
 // Implementation of Runtime
 

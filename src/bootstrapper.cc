@@ -1415,6 +1415,9 @@ void Genesis::InstallExperimentalNativeFunctions() {
     INSTALL_NATIVE(JSFunction, "DerivedSetTrap", derived_set_trap);
     INSTALL_NATIVE(JSFunction, "ProxyEnumerate", proxy_enumerate);
   }
+  if (FLAG_harmony_object_observe) {
+    INSTALL_NATIVE(JSFunction, "DeliverChangeRecords", deliver_change_records);
+  }
 }
 
 #undef INSTALL_NATIVE

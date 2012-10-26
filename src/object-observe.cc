@@ -27,57 +27,23 @@
 
 #include "v8.h"
 
-#include "cctest.h"
+#include "execution.h"
+#include "isolate.h"
+#include "object-observe.h"
 
-using namespace v8;
+namespace v8 {
+namespace internal {
 
-namespace {
-// Need to create a new isolate when FLAG_harmony_object_observe is on.
-class HarmonyIsolate {
- public:
-  HarmonyIsolate() {
-    i::FLAG_harmony_object_observe = true;
-    isolate_ = Isolate::New();
-    isolate_->Enter();
-  }
-
-  ~HarmonyIsolate() {
-    isolate_->Exit();
-    isolate_->Dispose();
-  }
-
- private:
-  Isolate* isolate_;
-};
+void ObjectObservation::DeliverChangeRecords(Isolate* isolate) {
+  isolate->set_has_active_object_observers(false);
+  bool threw = false;
+  Execution::Call(
+      isolate->deliver_change_records(),
+      isolate->factory()->undefined_value(),
+      0,
+      NULL,
+      &threw);
+  ASSERT(!threw);
 }
 
-TEST(PerIsolateState) {
-  HarmonyIsolate isolate;
-  HandleScope scope;
-  LocalContext context1;
-  Handle<Value> obj = CompileRun(
-      "var obj = {};"
-      "var count = 0;"
-      "var observer = function(records) { count = records.length };"
-      "Object.observe(obj, observer);"
-      "obj");
-  {
-    LocalContext context2;
-    context2->Global()->Set(String::New("obj"), obj);
-    CompileRun("Object.notify(obj, {type: 'a'})");
-  }
-  CHECK_EQ(1, CompileRun("count")->Int32Value());
-}
-
-TEST(EndOfMicrotaskDelivery) {
-  HarmonyIsolate isolate;
-  HandleScope scope;
-  LocalContext context;
-  CompileRun(
-      "var obj = {};"
-      "var count = 0;"
-      "var observer = function(records) { count = records.length };"
-      "Object.observe(obj, observer);"
-      "Object.notify(obj, {type: 'a'});");
-  CHECK_EQ(1, CompileRun("count")->Int32Value());
-}
+} }  // namespace v8::internal

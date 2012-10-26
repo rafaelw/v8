@@ -38,6 +38,7 @@
 #include "hydrogen.h"
 #include "lithium-allocator.h"
 #include "log.h"
+#include "object-observe.h"
 #include "once.h"
 #include "platform.h"
 #include "runtime-profiler.h"
@@ -216,14 +217,21 @@ void V8::RemoveCallCompletedCallback(CallCompletedCallback callback) {
 
 
 void V8::FireCallCompletedCallback(Isolate* isolate) {
-  if (call_completed_callbacks_ == NULL) return;
+  bool has_call_completed_callbacks = call_completed_callbacks_ != NULL;
+  bool has_active_object_observers = isolate->has_active_object_observers();
+  if (!has_call_completed_callbacks && !has_active_object_observers) return;
   HandleScopeImplementer* handle_scope_implementer =
       isolate->handle_scope_implementer();
   if (!handle_scope_implementer->CallDepthIsZero()) return;
   // Fire callbacks.  Increase call depth to prevent recursive callbacks.
   handle_scope_implementer->IncrementCallDepth();
-  for (int i = 0; i < call_completed_callbacks_->length(); i++) {
-    call_completed_callbacks_->at(i)();
+  if (has_active_object_observers) {
+    ObjectObservation::DeliverChangeRecords(isolate);
+  }
+  if (has_call_completed_callbacks) {
+    for (int i = 0; i < call_completed_callbacks_->length(); i++) {
+      call_completed_callbacks_->at(i)();
+    }
   }
   handle_scope_implementer->DecrementCallDepth();
 }

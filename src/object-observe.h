@@ -25,59 +25,21 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "v8.h"
+#ifndef V8_OBJECT_OBSERVE_H_
+#define V8_OBJECT_OBSERVE_H_
 
-#include "cctest.h"
+#include "allocation.h"
 
-using namespace v8;
+namespace v8 {
+namespace internal {
 
-namespace {
-// Need to create a new isolate when FLAG_harmony_object_observe is on.
-class HarmonyIsolate {
+class Isolate;
+
+class ObjectObservation : public AllStatic {
  public:
-  HarmonyIsolate() {
-    i::FLAG_harmony_object_observe = true;
-    isolate_ = Isolate::New();
-    isolate_->Enter();
-  }
-
-  ~HarmonyIsolate() {
-    isolate_->Exit();
-    isolate_->Dispose();
-  }
-
- private:
-  Isolate* isolate_;
+  static void DeliverChangeRecords(Isolate* isolate);
 };
-}
 
-TEST(PerIsolateState) {
-  HarmonyIsolate isolate;
-  HandleScope scope;
-  LocalContext context1;
-  Handle<Value> obj = CompileRun(
-      "var obj = {};"
-      "var count = 0;"
-      "var observer = function(records) { count = records.length };"
-      "Object.observe(obj, observer);"
-      "obj");
-  {
-    LocalContext context2;
-    context2->Global()->Set(String::New("obj"), obj);
-    CompileRun("Object.notify(obj, {type: 'a'})");
-  }
-  CHECK_EQ(1, CompileRun("count")->Int32Value());
-}
+} }  // namespace v8::internal
 
-TEST(EndOfMicrotaskDelivery) {
-  HarmonyIsolate isolate;
-  HandleScope scope;
-  LocalContext context;
-  CompileRun(
-      "var obj = {};"
-      "var count = 0;"
-      "var observer = function(records) { count = records.length };"
-      "Object.observe(obj, observer);"
-      "Object.notify(obj, {type: 'a'});");
-  CHECK_EQ(1, CompileRun("count")->Int32Value());
-}
+#endif  // V8_OBJECT_OBSERVE_H_

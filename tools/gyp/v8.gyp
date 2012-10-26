@@ -380,6 +380,8 @@
             '../../src/messages.cc',
             '../../src/messages.h',
             '../../src/natives.h',
+            '../../src/object-observe.cc',
+            '../../src/object-observe.h',
             '../../src/objects-debug.cc',
             '../../src/objects-inl.h',
             '../../src/objects-printer.cc',

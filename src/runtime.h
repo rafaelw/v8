@@ -319,6 +319,7 @@ namespace internal {
   \
   /* Object observation */ \
   F(GetObjectObservationState, 0, 1) \
+  F(SetHasActiveObjectObservers, 0, 1) \
   \
   /* Statements */ \
   F(NewClosure, 3, 1) \
