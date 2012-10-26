@@ -163,7 +163,8 @@ enum BindingFlags {
   V(DERIVED_SET_TRAP_INDEX, JSFunction, derived_set_trap) \
   V(PROXY_ENUMERATE, JSFunction, proxy_enumerate) \
   V(RANDOM_SEED_INDEX, ByteArray, random_seed) \
-  V(DELIVER_CHANGE_RECORDS_INDEX, JSFunction, deliver_change_records)
+  V(DELIVER_CHANGE_RECORDS_INDEX, JSFunction, deliver_change_records) \
+  V(ENQUEUE_CHANGE_RECORD_INDEX, JSFunction, enqueue_change_record)
 
 // JSFunctions are pairs (context, function code), sometimes also called
 // closures. A Context object is used to represent function contexts and
@@ -292,6 +293,7 @@ class Context: public FixedArray {
     PROXY_ENUMERATE,
     RANDOM_SEED_INDEX,
     DELIVER_CHANGE_RECORDS_INDEX,
+    ENQUEUE_CHANGE_RECORD_INDEX,
 
     // Properties from here are treated as weak references by the full GC.
     // Scavenge treats them as strong references.

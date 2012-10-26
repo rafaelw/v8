@@ -56,9 +56,9 @@ function createObserver() {
     assertCallbackRecords: function(recs) {
       this.assertRecordCount(recs.length);
       for (var i = 0; i < recs.length; i++) {
-        assertSame(this.records[i].object, recs[i].object);
+        assertSame(recs[i].object, this.records[i].object);
         assertEquals('string', typeof recs[i].type);
-        assertPropertiesEqual(this.records[i], recs[i]);
+        assertPropertiesEqual(recs[i], this.records[i]);
       }
     }
   };

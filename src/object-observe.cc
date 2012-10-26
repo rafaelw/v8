@@ -46,4 +46,24 @@ void ObjectObservation::DeliverChangeRecords(Isolate* isolate) {
   ASSERT(!threw);
 }
 
+void ObjectObservation::EnqueueChangeRecord(Isolate* isolate,
+                                            Handle<Object> object,
+                                            Handle<Object> type,
+                                            Handle<Object> name,
+                                            Handle<Object> oldValue) {
+  bool threw = false;
+
+  Handle<Object> args[] = {
+    object, type, name, oldValue
+  };
+
+  Execution::Call(
+      isolate->enqueue_change_record(),
+      isolate->factory()->undefined_value(),
+      ARRAY_SIZE(args),
+      args,
+      &threw);
+  ASSERT(!threw);
+}
+
 } }  // namespace v8::internal

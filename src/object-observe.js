@@ -101,6 +101,28 @@ function ObjectUnobserve(object, callback) {
   changeObservers.splice(index, 1);
 }
 
+function CreateChangeRecord(object, type, name, oldValue) {
+  var changeRecord = {
+    object: object,
+    type: type,
+    name: name,
+    oldValue: oldValue  // TODO: Not present for some reconfigure mutations.
+  };
+
+  InternalObjectFreeze(changeRecord);
+  return changeRecord;
+}
+
+function CreateAndEnqueueChangeRecord(object, type, name, oldValue) {
+  var objectInfo = objectInfoMap.get(object);
+  if (IS_UNDEFINED(objectInfo))  // TODO: Add assert when this can not happen.
+    return;
+
+  var observers = objectInfo.changeObservers;
+  var changeRecord = CreateChangeRecord(object, type, name, oldValue);
+  EnqueueChangeRecord(changeRecord, observers);
+}
+
 function EnqueueChangeRecord(changeRecord, observers) {
   for (var i = 0; i < observers.length; i++) {
     var observer = observers[i];

@@ -38,6 +38,11 @@ class Isolate;
 class ObjectObservation : public AllStatic {
  public:
   static void DeliverChangeRecords(Isolate* isolate);
+  static void EnqueueChangeRecord(Isolate* isolate,
+                                  Handle<Object> object,
+                                  Handle<Object> type,
+                                  Handle<Object> name,
+                                  Handle<Object> oldValue);
 };
 
 } }  // namespace v8::internal

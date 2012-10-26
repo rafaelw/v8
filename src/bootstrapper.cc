@@ -1417,6 +1417,8 @@ void Genesis::InstallExperimentalNativeFunctions() {
   }
   if (FLAG_harmony_object_observe) {
     INSTALL_NATIVE(JSFunction, "DeliverChangeRecords", deliver_change_records);
+    INSTALL_NATIVE(JSFunction, "CreateAndEnqueueChangeRecord",
+                   enqueue_change_record);
   }
 }
 
