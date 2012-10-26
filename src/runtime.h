@@ -317,6 +317,9 @@ namespace internal {
   F(WeakMapDelete, 2, 1) \
   F(WeakMapSet, 3, 1) \
   \
+  /* Object observation */ \
+  F(GetObjectObservationState, 0, 1) \
+  \
   /* Statements */ \
   F(NewClosure, 3, 1) \
   F(NewObject, 1, 1) \

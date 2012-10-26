@@ -13222,6 +13222,12 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_HaveSameMap) {
   return isolate->heap()->ToBoolean(obj1->map() == obj2->map());
 }
 
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_GetObjectObservationState) {
+  ASSERT(args.length() == 0);
+  return isolate->heap()->object_observation_state();
+}
+
 // ----------------------------------------------------------------------------
 // Implementation of Runtime
 

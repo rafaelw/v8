@@ -43,8 +43,13 @@ function createInternalWeakMap() {
   return map;
 }
 
-var observerInfoMap = createInternalWeakMap();
-var objectInfoMap = createInternalWeakMap();
+var objectObservationState = %GetObjectObservationState();
+if (IS_UNDEFINED(objectObservationState.observerInfoMap)) {
+  objectObservationState.observerInfoMap = createInternalWeakMap();
+  objectObservationState.objectInfoMap = createInternalWeakMap();
+}
+var observerInfoMap = objectObservationState.observerInfoMap;
+var objectInfoMap = objectObservationState.objectInfoMap;
 
 function ObjectObserve(object, callback) {
   if (!IS_SPEC_OBJECT(object))

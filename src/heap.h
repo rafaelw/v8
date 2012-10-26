@@ -154,7 +154,8 @@ namespace internal {
   V(Smi, arguments_adaptor_deopt_pc_offset, ArgumentsAdaptorDeoptPCOffset)     \
   V(Smi, construct_stub_deopt_pc_offset, ConstructStubDeoptPCOffset)           \
   V(Smi, getter_stub_deopt_pc_offset, GetterStubDeoptPCOffset)                 \
-  V(Smi, setter_stub_deopt_pc_offset, SetterStubDeoptPCOffset)
+  V(Smi, setter_stub_deopt_pc_offset, SetterStubDeoptPCOffset)                 \
+  V(JSObject, object_observation_state, ObjectObservationState)
 
 #define ROOT_LIST(V)                                  \
   STRONG_ROOT_LIST(V)                                 \
